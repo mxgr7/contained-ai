@@ -109,16 +109,24 @@ def test_build_command_invokes_runtime(monkeypatch, capsys):
     called: dict[str, object] = {}
 
     def fake_build_base(tag, *, rebuild):
-        called["tag"] = tag
-        called["rebuild"] = rebuild
+        called["base_tag"] = tag
+        called["base_rebuild"] = rebuild
         return tag or "ghcr.io/contained-ai/contained-base:edge"
 
+    def fake_build_proxy(tag=None, *, rebuild):
+        called["proxy_rebuild"] = rebuild
+        return "ghcr.io/contained-ai/contained-proxy:edge"
+
     monkeypatch.setattr(runtime, "build_base", fake_build_base)
+    monkeypatch.setattr(runtime, "build_proxy", fake_build_proxy)
     rc = cli.main(["build"])
     assert rc == 0
-    assert called["tag"] is None
-    assert called["rebuild"] is False
-    assert "built" in capsys.readouterr().out
+    assert called["base_tag"] is None
+    assert called["base_rebuild"] is False
+    assert called["proxy_rebuild"] is False
+    out = capsys.readouterr().out
+    assert "contained-base" in out
+    assert "contained-proxy" in out
 
 
 def test_build_command_custom_tag_rebuild(monkeypatch, capsys):
@@ -127,14 +135,23 @@ def test_build_command_custom_tag_rebuild(monkeypatch, capsys):
     seen: dict[str, object] = {}
 
     def fake_build_base(tag, *, rebuild):
-        seen["tag"] = tag
+        seen["base_tag"] = tag
         seen["rebuild"] = rebuild
         return tag
 
+    def fake_build_proxy(tag=None, *, rebuild):
+        seen["proxy_rebuild"] = rebuild
+        return "proxy"
+
     monkeypatch.setattr(runtime, "build_base", fake_build_base)
+    monkeypatch.setattr(runtime, "build_proxy", fake_build_proxy)
     rc = cli.main(["build", "--tag", "local/base:dev", "--rebuild"])
     assert rc == 0
-    assert seen == {"tag": "local/base:dev", "rebuild": True}
+    assert seen == {
+        "base_tag": "local/base:dev",
+        "rebuild": True,
+        "proxy_rebuild": True,
+    }
 
 
 def test_run_errors_on_unset_required_env(tmp_path: Path, capsys, monkeypatch):
@@ -167,8 +184,26 @@ def test_no_state_flag_reaches_runtime(tmp_path: Path, monkeypatch, capsys):
     assert seen == {"no_state": True, "has_claude_mount": False}
 
 
-def test_doctor_runs_even_without_docker(capsys):
+def test_doctor_runs_even_without_docker(capsys, monkeypatch):
+    # Don't hit the live network during tests.
+    import socket
+    def fake_connect(addr, timeout=None):
+        raise OSError("blocked in test")
+    monkeypatch.setattr(socket, "create_connection", fake_connect)
     rc = cli.main(["doctor"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "contained doctor" in out
+    assert "allowlist " in out  # reachability check ran
+
+
+def test_doctor_reachability_passes_when_reachable(capsys, monkeypatch):
+    import socket
+    class FakeSock:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: FakeSock())
+    rc = cli.main(["doctor"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "reachable" in out

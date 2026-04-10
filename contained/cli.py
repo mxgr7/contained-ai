@@ -184,6 +184,18 @@ def _cmd_run(args: argparse.Namespace, passthrough: list[str]) -> int:
             )
             return 2
 
+    if resolved.network == "allowlist":
+        print(
+            f"contained: egress via allowlist proxy "
+            f"({len(resolved.allowlist)} hosts)",
+            file=sys.stderr,
+        )
+        print(
+            "contained: if the agent reports a blocked host, add it with "
+            "`--allow <host>:<port>` or in contained.yaml",
+            file=sys.stderr,
+        )
+
     try:
         return runtime.run(resolved, cwd)
     except runtime.RuntimeError as e:
@@ -193,11 +205,16 @@ def _cmd_run(args: argparse.Namespace, passthrough: list[str]) -> int:
 
 def _cmd_build(args: argparse.Namespace) -> int:
     try:
-        tag = runtime.build_base(args.tag, rebuild=args.rebuild)
+        base_tag = runtime.build_base(args.tag, rebuild=args.rebuild)
+        # The `--tag` override only targets the base image; the proxy
+        # image always uses its canonical ref so `contained run` finds
+        # it without extra plumbing.
+        proxy_tag = runtime.build_proxy(rebuild=args.rebuild)
     except runtime.RuntimeError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
-    print(f"built {tag}")
+    print(f"built {base_tag}")
+    print(f"built {proxy_tag}")
     return 0
 
 

@@ -16,7 +16,7 @@ import subprocess
 from importlib import resources
 from pathlib import Path
 
-from . import profiles, state
+from . import profiles, proxy, state
 from .run import ResolvedRun
 from .state import state_root
 
@@ -55,7 +55,12 @@ def ensure_daemon() -> None:
         )
 
 
-def build_argv(run: ResolvedRun, *, mask_secrets: bool = False) -> list[str]:
+def build_argv(
+    run: ResolvedRun,
+    *,
+    mask_secrets: bool = False,
+    proxy_network: str | None = None,
+) -> list[str]:
     argv = [
         "docker", "run", "--rm", "-it", "--init",
         "--user", "1000:1000",
@@ -78,7 +83,16 @@ def build_argv(run: ResolvedRun, *, mask_secrets: bool = False) -> list[str]:
         argv += ["--network", "host"]
     elif run.network == "none":
         argv += ["--network", "none"]
-    # allowlist: proxy sidecar is PRD 04; fall back to default bridge.
+    elif run.network == "allowlist":
+        # Routed through the tinyproxy sidecar on a private internal
+        # network. For --dry-run we don't know a real network name
+        # yet; use a placeholder so the preview is still readable.
+        network = proxy_network or "contained-allowlist"
+        argv += ["--network", network]
+        proxy_url = f"http://{proxy.PROXY_ALIAS}:{proxy.PROXY_PORT}"
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            argv += ["--env", f"{key}={proxy_url}"]
+        argv += ["--env", "NO_PROXY=localhost,127.0.0.1"]
     argv.append(run.image)
     if run.agent.entrypoint:
         argv += run.agent.entrypoint
@@ -190,8 +204,27 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
         )
         resolved = dataclasses.replace(resolved, image=image)
 
-    argv = build_argv(resolved)
-    return _execute(argv)
+    session: proxy.ProxySession | None = None
+    if resolved.network == "allowlist":
+        try:
+            session = proxy.start(
+                proxy.new_run_id(), resolved.allowlist, profiles.PROXY_IMAGE
+            )
+        except (proxy.ProxyError, OSError) as e:
+            raise RuntimeError(
+                f"failed to start egress proxy: {e}. "
+                "run `contained build` to build the proxy image, "
+                "or pass `--network host` to bypass the allowlist."
+            ) from e
+    try:
+        argv = build_argv(
+            resolved,
+            proxy_network=session.network if session else None,
+        )
+        return _execute(argv)
+    finally:
+        if session is not None:
+            proxy.stop(session)
 
 
 def _execute(argv: list[str]) -> int:
@@ -218,24 +251,50 @@ def base_dockerfile_path() -> Path:
         return Path(p)
 
 
+def proxy_dockerfile_path() -> Path:
+    """Filesystem path to the bundled Dockerfile.proxy asset."""
+    ref = resources.files("contained").joinpath("assets/Dockerfile.proxy")
+    with resources.as_file(ref) as p:
+        return Path(p)
+
+
 def build_base(tag: str | None = None, *, rebuild: bool = False) -> str:
     """Build the shared base image locally.
 
     `tag` defaults to the profile base image ref so `contained run` picks
     it up without `--image`. `rebuild` forces `--no-cache`.
     """
+    return _build_image(
+        base_dockerfile_path(),
+        tag or profiles.BASE_IMAGE,
+        rebuild=rebuild,
+        what="base image",
+    )
+
+
+def build_proxy(tag: str | None = None, *, rebuild: bool = False) -> str:
+    """Build the egress proxy sidecar image locally."""
+    return _build_image(
+        proxy_dockerfile_path(),
+        tag or profiles.PROXY_IMAGE,
+        rebuild=rebuild,
+        what="proxy image",
+    )
+
+
+def _build_image(
+    dockerfile: Path, tag: str, *, rebuild: bool, what: str
+) -> str:
     if shutil.which("docker") is None:
         raise RuntimeError(
             "docker binary not found in PATH. install Docker Desktop (macOS) "
             "or docker-ce (Linux), then re-run."
         )
-    resolved_tag = tag or profiles.BASE_IMAGE
-    dockerfile = base_dockerfile_path()
-    cmd = ["docker", "build", "-t", resolved_tag, "-f", str(dockerfile)]
+    cmd = ["docker", "build", "-t", tag, "-f", str(dockerfile)]
     if rebuild:
         cmd.append("--no-cache")
     cmd.append(str(dockerfile.parent))
     result = subprocess.run(cmd)
     if result.returncode != 0:
-        raise RuntimeError(f"base image build failed (tag={resolved_tag})")
-    return resolved_tag
+        raise RuntimeError(f"{what} build failed (tag={tag})")
+    return tag

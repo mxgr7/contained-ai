@@ -32,6 +32,7 @@ class AgentProfile:
 
 
 BASE_IMAGE = "ghcr.io/contained-ai/contained-base:edge"
+PROXY_IMAGE = "ghcr.io/contained-ai/contained-proxy:edge"
 
 CLAUDE = AgentProfile(
     name="claude",

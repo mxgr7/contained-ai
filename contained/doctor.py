@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,7 @@ def run_checks() -> list[Check]:
         _check_docker_daemon(),
         _check_state_dir(),
         _check_known_profiles(),
+        *_check_allowlist_reachability(),
     ]
 
 
@@ -72,6 +74,30 @@ def _check_state_dir() -> Check:
 def _check_known_profiles() -> Check:
     names = profiles.names()
     return Check("agent profiles", True, ", ".join(names))
+
+
+def _check_allowlist_reachability() -> list[Check]:
+    """TCP-connect probe each tool-wide allowlist entry.
+
+    Runs from the host, so this is an optimistic check: it tells you
+    the network path exists, not that the in-container proxy will let
+    it through. Per-profile and per-project allowlist entries are
+    skipped to keep doctor fast.
+    """
+    out: list[Check] = []
+    for entry in profiles.TOOL_DEFAULT_ALLOWLIST:
+        host, _, port_s = entry.partition(":")
+        try:
+            port = int(port_s) if port_s else 443
+        except ValueError:
+            out.append(Check(f"allowlist {entry}", False, "malformed entry"))
+            continue
+        try:
+            with socket.create_connection((host, port), timeout=2):
+                out.append(Check(f"allowlist {entry}", True, "reachable"))
+        except OSError as e:
+            out.append(Check(f"allowlist {entry}", False, f"{e}"))
+    return out
 
 
 def format_report(checks: list[Check]) -> str:

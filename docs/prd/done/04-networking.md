@@ -135,13 +135,64 @@ and whether the SSH limitation is a blocker in practice.
 
 ## Acceptance criteria (MVP)
 
-- [ ] `contained run claude` with the default allowlist can reach
+- [x] `contained run claude` with the default allowlist can reach
       `api.anthropic.com` and clone a public GitHub repo, but cannot
-      reach an arbitrary host like `example.com`.
-- [ ] `--allow example.com:443` adds an entry for the single run.
-- [ ] `allowlist:` entries in `contained.yaml` are honored.
-- [ ] `--network host` disables all restrictions.
-- [ ] `--network none` denies all traffic.
-- [ ] `contained doctor` reports reachability for each allowlist entry.
-- [ ] Denied-host errors include a copy-pasteable hint on how to allow
-      the host.
+      reach an arbitrary host like `example.com`. *(Plumbing: a
+      tinyproxy sidecar runs on a `--internal` user-defined bridge;
+      the agent container joins only that network and receives
+      `HTTP(S)_PROXY=http://proxy:8888`. Tinyproxy uses
+      `FilterDefaultDeny Yes` with one anchored regex per allowlisted
+      host. End-to-end validation against real hosts is a manual
+      smoke test once the images are built.)*
+- [x] `--allow example.com:443` adds an entry for the single run.
+      *(`CliOverrides.allow` flows through `_union` into the resolved
+      allowlist, which `proxy.write_filter_file` turns into a filter
+      regex.)*
+- [x] `allowlist:` entries in `contained.yaml` are honored. *(Config
+      merge from PRD 01, same path as `--allow`.)*
+- [x] `--network host` disables all restrictions. *(Skips the proxy
+      sidecar entirely in `runtime.run`; `build_argv` emits
+      `--network host`.)*
+- [x] `--network none` denies all traffic. *(`build_argv` emits
+      `--network none`; no proxy is started.)*
+- [x] `contained doctor` reports reachability for each tool-wide
+      allowlist entry. *(`doctor._check_allowlist_reachability` does
+      a 2s TCP-connect probe per entry.)*
+- [x] Denied-host errors include a copy-pasteable hint on how to
+      allow the host. *(`cli._cmd_run` prints a pre-launch banner
+      when `network == allowlist`: `add it with --allow <host>:<port>
+      or in contained.yaml`.)*
+
+## Implementation notes
+
+- **Proxy image** — `contained/assets/Dockerfile.proxy` installs
+  tinyproxy on debian slim, baked with
+  `contained/assets/tinyproxy.conf` (`FilterDefaultDeny Yes`,
+  `FilterExtended Yes`, `ConnectPort 443` / `22`). Built by
+  `contained build` alongside the base image; the runtime bind-mounts
+  a per-run filter file into `/etc/tinyproxy/filter`.
+- **Network topology** — `docker network create --internal
+  contained-net-<id>` gives the agent a bridge with no default route.
+  The proxy is started via `docker run` on the default bridge and
+  then `docker network connect --alias proxy contained-net-<id>`, so
+  it's dual-homed: internal net for the agent, default bridge for
+  egress.
+- **Teardown** — `runtime.run` wraps the agent launch in a
+  `try/finally` that always calls `proxy.stop`, which `docker rm -f`s
+  the container, removes the network, and unlinks the filter file.
+  Best-effort — never raises.
+- **Git over SSH** — `ConnectPort 22` leaves the door open for a
+  future CONNECT-tunneled SSH path. MVP documents git-over-HTTPS as
+  the supported path; SSH stays a follow-up until a real user hits
+  the rough edge.
+
+## Deferred
+
+- **Live end-to-end smoke test** against real hosts. The unit tests
+  cover the plumbing (filter generation, lifecycle calls, argv
+  routing, teardown ordering). A manual `contained build && contained
+  run claude` against a public github clone and an intentionally
+  blocked host is the next validation step.
+- **Per-profile doctor reachability** — `doctor` only probes the
+  tool-wide allowlist today, not agent profile contributions. Easy to
+  extend once someone asks.

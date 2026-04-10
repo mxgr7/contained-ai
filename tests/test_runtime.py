@@ -50,8 +50,20 @@ def test_build_argv_network_modes(tmp_path: Path):
     allow = runtime.build_argv(_resolved(tmp_path, network="allowlist"))
     assert "--network" in host and host[host.index("--network") + 1] == "host"
     assert "--network" in none and none[none.index("--network") + 1] == "none"
-    # allowlist: proxy is PRD 04, so no --network flag for now
-    assert "--network" not in allow
+    assert "--network" in allow
+    assert allow[allow.index("--network") + 1] == "contained-allowlist"
+    joined = " ".join(allow)
+    assert "HTTPS_PROXY=http://proxy:8888" in joined
+    assert "HTTP_PROXY=http://proxy:8888" in joined
+    assert "NO_PROXY=" in joined
+
+
+def test_build_argv_allowlist_uses_real_network_name(tmp_path: Path):
+    argv = runtime.build_argv(
+        _resolved(tmp_path, network="allowlist"),
+        proxy_network="contained-net-abc123",
+    )
+    assert argv[argv.index("--network") + 1] == "contained-net-abc123"
 
 
 def test_build_argv_entrypoint_and_passthrough(tmp_path: Path):
@@ -259,6 +271,98 @@ def test_run_skips_state_dir_creation_with_no_state(tmp_path: Path, monkeypatch)
     r = _resolved(tmp_path, no_state=True)
     runtime.run(r, tmp_path)
     assert not (tmp_path / "xdg" / "contained").exists()
+
+
+def test_run_starts_and_stops_proxy_in_allowlist(tmp_path: Path, monkeypatch):
+    from contained import proxy
+    monkeypatch.setattr(runtime, "ensure_daemon", lambda: None)
+    started: list[tuple] = []
+    stopped: list[proxy.ProxySession] = []
+
+    def fake_start(run_id, allowlist, image):
+        s = proxy.ProxySession(
+            run_id, f"contained-net-{run_id}", f"contained-proxy-{run_id}",
+            tmp_path / "filter.txt",
+        )
+        (tmp_path / "filter.txt").write_text("")
+        started.append((run_id, allowlist, image))
+        return s
+
+    monkeypatch.setattr(proxy, "start", fake_start)
+    monkeypatch.setattr(proxy, "stop", lambda s: stopped.append(s))
+    captured: dict[str, list[str]] = {}
+    monkeypatch.setattr(
+        runtime, "_execute",
+        lambda argv: captured.__setitem__("argv", argv) or 0,
+    )
+    r = _resolved(tmp_path)  # default network is allowlist
+    assert r.network == "allowlist"
+    rc = runtime.run(r, tmp_path)
+    assert rc == 0
+    assert len(started) == 1
+    assert len(stopped) == 1
+    assert "api.anthropic.com:443" in started[0][1]
+    # Agent container got the real network name, not the placeholder.
+    argv = captured["argv"]
+    net_idx = argv.index("--network")
+    assert argv[net_idx + 1].startswith("contained-net-")
+
+
+def test_run_stops_proxy_even_if_execute_raises(tmp_path: Path, monkeypatch):
+    from contained import proxy
+    monkeypatch.setattr(runtime, "ensure_daemon", lambda: None)
+    fp = tmp_path / "filter.txt"
+    fp.write_text("")
+    session = proxy.ProxySession("xx", "net-xx", "proxy-xx", fp)
+    monkeypatch.setattr(proxy, "start", lambda *a, **k: session)
+    stopped: list[proxy.ProxySession] = []
+    monkeypatch.setattr(proxy, "stop", lambda s: stopped.append(s))
+
+    def boom(argv):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(runtime, "_execute", boom)
+    with pytest.raises(KeyboardInterrupt):
+        runtime.run(_resolved(tmp_path), tmp_path)
+    assert stopped == [session]
+
+
+def test_run_skips_proxy_for_host_network(tmp_path: Path, monkeypatch):
+    from contained import proxy
+    monkeypatch.setattr(runtime, "ensure_daemon", lambda: None)
+    called = {"start": 0}
+    monkeypatch.setattr(
+        proxy, "start",
+        lambda *a, **k: called.__setitem__("start", called["start"] + 1),
+    )
+    monkeypatch.setattr(runtime, "_execute", lambda argv: 0)
+    r = _resolved(tmp_path, network="host")
+    runtime.run(r, tmp_path)
+    assert called["start"] == 0
+
+
+def test_run_proxy_start_failure_surfaces_error(tmp_path: Path, monkeypatch):
+    from contained import proxy
+    monkeypatch.setattr(runtime, "ensure_daemon", lambda: None)
+
+    def fail(*a, **k):
+        raise proxy.ProxyError("docker network create: boom")
+
+    monkeypatch.setattr(proxy, "start", fail)
+    with pytest.raises(runtime.RuntimeError, match="egress proxy"):
+        runtime.run(_resolved(tmp_path), tmp_path)
+
+
+def test_build_proxy_uses_proxy_dockerfile(monkeypatch):
+    monkeypatch.setattr(runtime.shutil, "which", lambda _: "/usr/bin/docker")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        runtime.subprocess, "run",
+        lambda cmd, **kw: calls.append(cmd) or MagicMock(returncode=0),
+    )
+    tag = runtime.build_proxy()
+    assert tag == profiles.PROXY_IMAGE
+    assert "Dockerfile.proxy" in calls[0][calls[0].index("-f") + 1]
 
 
 def test_run_builds_overlay_when_present(tmp_path: Path, monkeypatch):
