@@ -172,22 +172,46 @@ def test_run_errors_on_unset_required_env(tmp_path: Path, capsys, monkeypatch):
     assert "--env flag" in err
 
 
+def _patch_claude_required_env(monkeypatch, keys: list[str]) -> None:
+    import dataclasses
+
+    from contained import profiles
+
+    patched = dataclasses.replace(
+        profiles.CLAUDE,
+        env=list(profiles.CLAUDE.env) + keys,
+        required_env=keys,
+    )
+    monkeypatch.setitem(profiles._PROFILES, "claude", patched)
+
+
 def test_run_errors_on_unset_profile_env(tmp_path: Path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("CONTAINED_TEST_REQUIRED", raising=False)
+    _patch_claude_required_env(monkeypatch, ["CONTAINED_TEST_REQUIRED"])
     rc = cli.main(["run", "claude"])
     assert rc == 2
     err = capsys.readouterr().err
-    assert "ANTHROPIC_API_KEY" in err
+    assert "CONTAINED_TEST_REQUIRED" in err
     assert "agent profile 'claude'" in err
 
 
 def test_run_errors_on_unset_profile_env_dry_run(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("CONTAINED_TEST_REQUIRED", raising=False)
+    _patch_claude_required_env(monkeypatch, ["CONTAINED_TEST_REQUIRED"])
     rc = cli.main(["run", "claude", "--dry-run"])
     assert rc == 2
-    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
+    assert "CONTAINED_TEST_REQUIRED" in capsys.readouterr().err
+
+
+def test_run_claude_without_api_key_uses_oauth(tmp_path: Path, capsys, monkeypatch):
+    """Claude profile must not require ANTHROPIC_API_KEY — OAuth is valid."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    rc = cli.main(["run", "claude", "--dry-run"])
+    assert rc == 0
+    assert "resolved config" in capsys.readouterr().out
 
 
 def test_no_state_flag_reaches_runtime(tmp_path: Path, monkeypatch, capsys):

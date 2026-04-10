@@ -66,7 +66,6 @@ CLAUDE = AgentProfile(
     image=BASE_IMAGE,
     entrypoint=["claude"],
     env=["ANTHROPIC_API_KEY", "CLAUDE_MODEL"],
-    required_env=["ANTHROPIC_API_KEY"],
     allowlist=["api.anthropic.com:443", "platform.claude.com:443"],
     state_mount="/home/agent/.claude",
     file_seeds=[
