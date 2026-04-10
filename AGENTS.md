@@ -74,6 +74,15 @@ Move files between these directories as work progresses. The numeric
 prefix is stable — **always refer to PRDs by number, not by path**,
 because paths change as PRDs ship.
 
+**Move PRDs as their status changes.** When you start implementing a
+PRD, `git mv` it from `todo/` to `in_progress/`. When its code-side
+acceptance criteria are all met, `git mv` it to `done/` in the same
+commit that ships the work — even if some criteria are explicitly
+deferred to a later PRD or blocked on external work (publishing,
+ops), as long as those are flagged in the acceptance criteria
+section. A stale `in_progress/` is worse than a `done/` file that
+names its remaining dependencies.
+
 - `00-overview.md` — project overview, MVP roadmap, phase breakdown.
   **Read this first.**
 - `01-cli-and-config.md` — CLI surface and `contained.yaml` schema.
