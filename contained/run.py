@@ -58,6 +58,7 @@ class ResolvedRun:
     rebuild: bool = False
     no_state: bool = False
     warnings: list[str] = field(default_factory=list)
+    planned_seeds: list["state.PlannedSeed"] = field(default_factory=list)
 
 
 @dataclass
@@ -163,14 +164,29 @@ def resolve(
         _require_host_path_exists(m)
 
     state_mount: Mount | None = None
+    planned_seeds: list[state.PlannedSeed] = []
     if not overrides.no_state and profile.state_mount is not None:
         host = state.agent_state_dir(cwd, profile.name)
         state_mount = Mount(host=host, container=profile.state_mount, read_only=False)
         mounts.append(state_mount)
 
+        if profile.file_seeds:
+            pstate = state.project_state_dir(cwd)
+            planned_seeds = state.plan_seeds(profile, pstate)
+            for p in planned_seeds:
+                if p.needs_mount and p.available:
+                    mounts.append(
+                        Mount(
+                            host=p.host_path,
+                            container=p.seed.container_path,
+                            read_only=False,
+                        )
+                    )
+
     env: list[EnvVar] = [_parse_env(e) for e in env_strs]
 
     warnings = _collect_warnings(user_mounts)
+    warnings.extend(_seed_warnings(planned_seeds))
 
     return ResolvedRun(
         agent=profile,
@@ -185,6 +201,7 @@ def resolve(
         rebuild=overrides.rebuild,
         no_state=overrides.no_state,
         warnings=warnings,
+        planned_seeds=planned_seeds,
     )
 
 
@@ -233,6 +250,22 @@ def _require_host_path_exists(m: Mount) -> None:
             f"mount source does not exist: {m.host} "
             "(contained does not create missing host paths)"
         )
+
+
+def _seed_warnings(plans: list[state.PlannedSeed]) -> list[str]:
+    out: list[str] = []
+    for p in plans:
+        if p.source is not None:
+            continue  # resolved from host source or cached from prior run
+        if p.needs_mount:
+            continue  # fallback placeholder will be written; no prompt expected
+        # No source found and nothing to write — the agent will prompt.
+        tried = ", ".join(p.seed.sources)
+        out.append(
+            f"warning: no host source for {p.seed.state_rel} "
+            f"(tried: {tried}). the agent will prompt for auth on first run."
+        )
+    return out
 
 
 _SENSITIVE_DIR_HINTS = (".env", ".ssh", ".aws")
@@ -323,6 +356,19 @@ def render_dry_run(run: ResolvedRun, host_env: dict[str, str]) -> str:
     for entry in run.allowlist:
         lines.append(f"  - {entry}")
     lines.append("")
+    if run.planned_seeds:
+        lines.append("credentials:")
+        for p in run.planned_seeds:
+            if p.source == "(cached)":
+                status = "cached in state"
+            elif p.source is not None:
+                status = f"seed from {p.source}"
+            elif p.data is not None:
+                status = "empty placeholder (no host source)"
+            else:
+                status = "missing (agent will prompt)"
+            lines.append(f"  - {p.seed.container_path} — {status}")
+        lines.append("")
     from . import runtime  # local import to avoid cycle
     lines.append("docker invocation (preview):")
     lines.append("  " + " ".join(runtime.build_argv(run, mask_secrets=True)))

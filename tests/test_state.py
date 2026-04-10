@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -171,58 +172,145 @@ def test_sensitive_dir_warning_suppressed_when_ro(tmp_path: Path, monkeypatch):
     assert not any(".ssh" in w for w in r.warnings)
 
 
-def test_seed_credentials_copies_missing_file(tmp_path: Path):
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-    host_src = tmp_path / "host" / ".credentials.json"
-    host_src.parent.mkdir()
-    host_src.write_text('{"token": "secret"}')
-    seeded = state.seed_credentials(
-        state_dir, {str(host_src): ".credentials.json"}
-    )
-    dst = state_dir / ".credentials.json"
-    assert dst.is_file()
-    assert dst.read_text() == '{"token": "secret"}'
-    assert seeded == [dst]
-    if os.name == "posix":
-        assert dst.stat().st_mode & 0o777 == 0o600
+def _force_keychain_miss(monkeypatch):
+    """Make keychain reads return None without prompting the user."""
+    monkeypatch.setattr(state, "_keychain_cache", {}, raising=False)
+    monkeypatch.setattr(state, "_keychain_read", lambda service: None)
 
 
-def test_seed_credentials_skips_when_dst_exists(tmp_path: Path):
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-    (state_dir / ".credentials.json").write_text("already-here")
-    host_src = tmp_path / "host.json"
-    host_src.write_text("new")
-    seeded = state.seed_credentials(
-        state_dir, {str(host_src): ".credentials.json"}
-    )
-    assert seeded == []
-    assert (state_dir / ".credentials.json").read_text() == "already-here"
-
-
-def test_seed_credentials_skips_missing_host_file(tmp_path: Path):
-    state_dir = tmp_path / "state"
-    state_dir.mkdir()
-    seeded = state.seed_credentials(
-        state_dir, {str(tmp_path / "nope"): ".credentials.json"}
-    )
-    assert seeded == []
-    assert not (state_dir / ".credentials.json").exists()
-
-
-def test_claude_profile_has_credential_seed():
+def test_plan_seeds_reads_host_file(tmp_path: Path, monkeypatch):
+    _force_keychain_miss(monkeypatch)
     from contained import profiles
-    assert profiles.CLAUDE.credential_seeds
-    assert ".credentials.json" in profiles.CLAUDE.credential_seeds.values()
+    fake_home = tmp_path / "home"
+    (fake_home / ".claude").mkdir(parents=True)
+    (fake_home / ".claude" / ".credentials.json").write_bytes(b'{"k":"v"}')
+    (fake_home / ".claude.json").write_bytes(b'{"onboarded": true}')
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("HOME", str(fake_home))
+    pstate = tmp_path / "pstate"
+    pstate.mkdir()
+    plans = state.plan_seeds(profiles.CLAUDE, pstate)
+    assert len(plans) == 2
+    by_rel = {p.seed.state_rel: p for p in plans}
+    assert by_rel["claude/.credentials.json"].data == b'{"k":"v"}'
+    assert by_rel["claude/.credentials.json"].needs_mount is False
+    assert by_rel["claude.json"].data == b'{"onboarded": true}'
+    assert by_rel["claude.json"].needs_mount is True
+
+
+def test_plan_seeds_uses_keychain_on_darwin(tmp_path: Path, monkeypatch):
+    from contained import profiles
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(state, "_keychain_cache", {}, raising=False)
+    monkeypatch.setattr(
+        state,
+        "_keychain_read",
+        lambda service: '{"token":"from-keychain"}' if service == "Claude Code-credentials" else None,
+    )
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("HOME", str(fake_home))
+    pstate = tmp_path / "pstate"
+    pstate.mkdir()
+    plans = state.plan_seeds(profiles.CLAUDE, pstate)
+    creds = next(p for p in plans if p.seed.state_rel == "claude/.credentials.json")
+    assert creds.source == "keychain:Claude Code-credentials"
+    assert creds.data == b'{"token":"from-keychain"}'
+
+
+def test_plan_seeds_fallback_for_needs_mount(tmp_path: Path, monkeypatch):
+    _force_keychain_miss(monkeypatch)
+    from contained import profiles
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("HOME", str(fake_home))
+    pstate = tmp_path / "pstate"
+    pstate.mkdir()
+    plans = state.plan_seeds(profiles.CLAUDE, pstate)
+    cj = next(p for p in plans if p.seed.state_rel == "claude.json")
+    assert cj.source is None
+    assert cj.data == b"{}\n"
+    assert cj.needs_mount is True
+    # Credentials: no host source, no fallback, not written.
+    creds = next(p for p in plans if p.seed.state_rel == "claude/.credentials.json")
+    assert creds.source is None
+    assert creds.data is None
+
+
+def test_plan_seeds_reuses_cached_state(tmp_path: Path, monkeypatch):
+    _force_keychain_miss(monkeypatch)
+    from contained import profiles
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("HOME", str(fake_home))
+    pstate = tmp_path / "pstate"
+    (pstate / "claude").mkdir(parents=True)
+    (pstate / "claude" / ".credentials.json").write_bytes(b"prior")
+    plans = state.plan_seeds(profiles.CLAUDE, pstate)
+    creds = next(p for p in plans if p.seed.state_rel == "claude/.credentials.json")
+    assert creds.source == "(cached)"
+    assert creds.data is None
+
+
+def test_apply_seeds_writes_pending(tmp_path: Path):
+    from contained.profiles import FileSeed
+    seed = FileSeed(
+        sources=(),
+        state_rel="foo.json",
+        container_path="/home/agent/foo.json",
+    )
+    plan = state.PlannedSeed(
+        seed=seed,
+        host_path=tmp_path / "foo.json",
+        source=None,
+        data=b"hello",
+        needs_mount=True,
+    )
+    written = state.apply_seeds([plan])
+    assert written == [plan]
+    assert (tmp_path / "foo.json").read_bytes() == b"hello"
+    if os.name == "posix":
+        assert (tmp_path / "foo.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_claude_profile_has_file_seeds():
+    from contained import profiles
+    assert profiles.CLAUDE.file_seeds
+    paths = {s.container_path for s in profiles.CLAUDE.file_seeds}
+    assert "/home/agent/.claude/.credentials.json" in paths
+    assert "/home/agent/.claude.json" in paths
+
+
+def test_resolve_adds_bind_mount_for_claude_json(tmp_path: Path, monkeypatch):
+    _force_keychain_miss(monkeypatch)
+    _redirect_state(monkeypatch, tmp_path / "xdg")
+    fake_home = tmp_path / "home"
+    (fake_home / ".claude").mkdir(parents=True)
+    (fake_home / ".claude" / ".credentials.json").write_bytes(b'{"k":"v"}')
+    (fake_home / ".claude.json").write_bytes(b'{"onboarded": true}')
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("HOME", str(fake_home))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    r = resolve("claude", _loaded(proj), CliOverrides(), cwd=proj)
+    mounts_by_container = {m.container: m for m in r.mounts}
+    assert "/home/agent/.claude.json" in mounts_by_container
+    # Credentials live under the state_mount dir so they shouldn't get
+    # their own file bind.
+    assert "/home/agent/.claude/.credentials.json" not in mounts_by_container
 
 
 def test_runtime_seeds_credentials_before_launch(tmp_path: Path, monkeypatch):
     from contained import runtime
+    _force_keychain_miss(monkeypatch)
     _redirect_state(monkeypatch, tmp_path / "xdg")
     fake_home = tmp_path / "home"
     (fake_home / ".claude").mkdir(parents=True)
     (fake_home / ".claude" / ".credentials.json").write_text('{"k":"v"}')
+    (fake_home / ".claude.json").write_text('{"onboarded": true}')
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
     monkeypatch.setenv("HOME", str(fake_home))
     monkeypatch.setattr(runtime, "ensure_daemon", lambda: None)
@@ -232,7 +320,25 @@ def test_runtime_seeds_credentials_before_launch(tmp_path: Path, monkeypatch):
     r = resolve("claude", _loaded(proj), CliOverrides(), cwd=proj)
     runtime.run(r, proj)
     state_dir = state.agent_state_dir(proj, "claude")
+    pstate = state.project_state_dir(proj)
     assert (state_dir / ".credentials.json").read_text() == '{"k":"v"}'
+    assert (pstate / "claude.json").read_text() == '{"onboarded": true}'
+
+
+def test_resolve_warns_when_no_credentials(tmp_path: Path, monkeypatch):
+    _force_keychain_miss(monkeypatch)
+    _redirect_state(monkeypatch, tmp_path / "xdg")
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("HOME", str(fake_home))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    r = resolve("claude", _loaded(proj), CliOverrides(), cwd=proj)
+    # credentials.json has no source and no fallback → warning
+    assert any("claude/.credentials.json" in w for w in r.warnings)
+    # claude.json has a fallback → no warning, just a placeholder
+    assert not any("claude.json " in w for w in r.warnings)
 
 
 def test_dry_run_shows_no_state_note(tmp_path: Path, monkeypatch):

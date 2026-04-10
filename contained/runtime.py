@@ -13,6 +13,7 @@ import dataclasses
 import hashlib
 import shutil
 import subprocess
+import sys
 from importlib import resources
 from pathlib import Path
 
@@ -190,9 +191,19 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
     ensure_daemon()
 
     if not resolved.no_state and resolved.agent.state_mount is not None:
-        state_dir = state.ensure_agent_state_dir(cwd, resolved.agent.name)
-        if resolved.agent.credential_seeds:
-            state.seed_credentials(state_dir, resolved.agent.credential_seeds)
+        state.ensure_agent_state_dir(cwd, resolved.agent.name)
+
+    if resolved.planned_seeds:
+        written = state.apply_seeds(resolved.planned_seeds)
+        for p in written:
+            if p.source is not None:
+                origin = p.source
+            else:
+                origin = "empty placeholder"
+            print(
+                f"contained: seeded {p.seed.container_path} ({origin})",
+                file=sys.stderr,
+            )
 
     overlay = find_overlay(resolved, cwd)
     if overlay is not None:

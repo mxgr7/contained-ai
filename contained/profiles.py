@@ -14,6 +14,36 @@ from .config import ConfigError
 
 
 @dataclass(frozen=True)
+class FileSeed:
+    """A host file to seed into per-project state on first run.
+
+    ``sources`` is a list of source specs tried in order; the first one
+    that resolves wins. A spec is either a host filesystem path (may
+    start with ``~``) or ``keychain:<service>`` for the macOS login
+    keychain (via ``security find-generic-password``).
+
+    ``state_rel`` is the destination, relative to the per-project
+    state dir (the parent of the agent state dir). ``container_path``
+    is where the file should appear inside the container.
+
+    If ``container_path`` is under the agent's ``state_mount`` it is
+    already covered by the directory-level state mount and no extra
+    bind is needed. Otherwise a file-level bind is added.
+
+    ``fallback_content`` is written as a placeholder when no source
+    resolves AND a file-level bind is required — so the mount target
+    exists and the container's writes persist across runs. For files
+    that live under ``state_mount`` the container can create them
+    itself, so the fallback is unused.
+    """
+
+    sources: tuple[str, ...]
+    state_rel: str
+    container_path: str
+    fallback_content: bytes = b""
+
+
+@dataclass(frozen=True)
 class AgentProfile:
     name: str
     image: str
@@ -24,11 +54,7 @@ class AgentProfile:
     allowlist: list[str] = field(default_factory=list)
     workdir: str = "/workspace"
     state_mount: str | None = None
-    # Host files to copy into the per-project state dir on first run so the
-    # agent finds its credentials without the container being able to
-    # rewrite the host's canonical copy. Maps host path (may start with ~)
-    # to a destination relative to the state mount root.
-    credential_seeds: dict[str, str] = field(default_factory=dict)
+    file_seeds: list[FileSeed] = field(default_factory=list)
 
 
 BASE_IMAGE = "ghcr.io/contained-ai/contained-base:edge"
@@ -41,7 +67,32 @@ CLAUDE = AgentProfile(
     env=["ANTHROPIC_API_KEY", "CLAUDE_MODEL"],
     allowlist=["api.anthropic.com:443", "platform.claude.com:443"],
     state_mount="/home/agent/.claude",
-    credential_seeds={"~/.claude/.credentials.json": ".credentials.json"},
+    file_seeds=[
+        # OAuth token. macOS Claude Code stores it in the login
+        # keychain; the Linux distribution stores it at
+        # ~/.claude/.credentials.json. Either source works — whichever
+        # the host has. Lands inside the state_mount dir, so no extra
+        # bind is needed.
+        FileSeed(
+            sources=(
+                "keychain:Claude Code-credentials",
+                "~/.claude/.credentials.json",
+            ),
+            state_rel="claude/.credentials.json",
+            container_path="/home/agent/.claude/.credentials.json",
+        ),
+        # Onboarding / per-project config (theme, tips history,
+        # hasCompletedOnboarding, etc.) lives at ~/.claude.json —
+        # outside ~/.claude/ — so it needs its own file-level bind.
+        # Falls back to an empty JSON object if the host has none yet,
+        # so the container's first-run state persists for next time.
+        FileSeed(
+            sources=("~/.claude.json",),
+            state_rel="claude.json",
+            container_path="/home/agent/.claude.json",
+            fallback_content=b"{}\n",
+        ),
+    ],
 )
 
 PI = AgentProfile(
