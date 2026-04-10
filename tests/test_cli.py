@@ -23,6 +23,7 @@ def test_help_when_no_command(capsys: pytest.CaptureFixture[str]):
 
 def test_run_dry_run_no_config(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     rc = cli.main(["run", "claude", "--dry-run"])
     out = capsys.readouterr().out
     assert rc == 0
@@ -39,6 +40,7 @@ def test_run_dry_run_with_config(tmp_path: Path, capsys: pytest.CaptureFixture[s
         "    allowlist: [special.example.com:443]\n"
     )
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     rc = cli.main(["run", "--dry-run"])
     out = capsys.readouterr().out
     assert rc == 0
@@ -47,6 +49,7 @@ def test_run_dry_run_with_config(tmp_path: Path, capsys: pytest.CaptureFixture[s
 
 def test_run_invokes_runtime(tmp_path: Path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     from contained import runtime
 
     called: dict[str, object] = {}
@@ -65,10 +68,11 @@ def test_run_invokes_runtime(tmp_path: Path, capsys, monkeypatch):
 
 def test_run_surfaces_runtime_error(tmp_path: Path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     from contained import runtime
 
     def boom(resolved, cwd):
-        raise runtime.RuntimeError("docker daemon is not reachable: nope")
+        raise runtime.DockerError("docker daemon is not reachable: nope")
 
     monkeypatch.setattr(runtime, "run", boom)
     rc = cli.main(["run", "claude"])
@@ -78,6 +82,7 @@ def test_run_surfaces_runtime_error(tmp_path: Path, capsys, monkeypatch):
 
 def test_passthrough_args(tmp_path: Path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     rc = cli.main(["run", "claude", "--dry-run", "--", "--help"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -97,6 +102,7 @@ def test_no_config_flag_ignores_discovered(tmp_path: Path, capsys, monkeypatch):
         "agents:\n  claude:\n    image: from-config\n"
     )
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     rc = cli.main(["run", "claude", "--dry-run", "--no-config"])
     assert rc == 0
     out = capsys.readouterr().out
@@ -156,17 +162,38 @@ def test_build_command_custom_tag_rebuild(monkeypatch, capsys):
 
 def test_run_errors_on_unset_required_env(tmp_path: Path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     monkeypatch.delenv("TOTALLY_UNSET_VAR_XYZ", raising=False)
     rc = cli.main(["run", "claude", "--env", "TOTALLY_UNSET_VAR_XYZ"])
     assert rc == 2
     err = capsys.readouterr().err
     assert "TOTALLY_UNSET_VAR_XYZ" in err
     assert "not set" in err
+    assert "--env flag" in err
+
+
+def test_run_errors_on_unset_profile_env(tmp_path: Path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    rc = cli.main(["run", "claude"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "ANTHROPIC_API_KEY" in err
+    assert "agent profile 'claude'" in err
+
+
+def test_run_errors_on_unset_profile_env_dry_run(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    rc = cli.main(["run", "claude", "--dry-run"])
+    assert rc == 2
+    assert "ANTHROPIC_API_KEY" in capsys.readouterr().err
 
 
 def test_no_state_flag_reaches_runtime(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     from contained import runtime
 
     seen: dict[str, object] = {}

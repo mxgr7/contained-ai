@@ -76,6 +76,33 @@ def test_start_cleans_up_on_proxy_run_failure(monkeypatch):
     assert any(c[:3] == ["docker", "network", "rm"] for c in calls)
 
 
+def test_start_cleans_up_filter_on_network_create_failure(monkeypatch, tmp_path):
+    calls: list[list[str]] = []
+    tempfiles: list[Path] = []
+
+    real_write = proxy.write_filter_file
+
+    def tracking_write(allowlist):
+        p = real_write(allowlist)
+        tempfiles.append(p)
+        return p
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[:3] == ["docker", "network", "create"]:
+            return MagicMock(returncode=1, stdout="", stderr="net boom")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(proxy, "write_filter_file", tracking_write)
+    monkeypatch.setattr(proxy.subprocess, "run", fake_run)
+    with pytest.raises(proxy.ProxyError, match="net boom"):
+        proxy.start("abc", ["example.com:443"], "proxy:tag")
+    # Filter tempfile must not leak.
+    assert tempfiles, "write_filter_file was not invoked"
+    for p in tempfiles:
+        assert not p.exists(), f"tempfile leaked: {p}"
+
+
 def test_stop_is_best_effort(monkeypatch, tmp_path):
     calls: list[list[str]] = []
     monkeypatch.setattr(

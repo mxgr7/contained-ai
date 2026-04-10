@@ -96,3 +96,35 @@ def test_network_override(tmp_path: Path):
     loaded = load(None, cwd=tmp_path)
     r = resolve("claude", loaded, CliOverrides(network="none"), cwd=tmp_path)
     assert r.network == "none"
+
+
+def test_default_workspace_mount_refuses_root(tmp_path: Path):
+    loaded = load(None, cwd=tmp_path)
+    with pytest.raises(ConfigError, match="host root"):
+        resolve("claude", loaded, CliOverrides(), cwd=Path("/"))
+
+
+def test_default_workspace_mount_refuses_home(tmp_path: Path, monkeypatch):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    loaded = load(None, cwd=fake_home)
+    with pytest.raises(ConfigError, match="home directory"):
+        resolve("claude", loaded, CliOverrides(), cwd=fake_home)
+
+
+def test_user_mount_under_workspace_does_not_suppress_default(tmp_path: Path):
+    sub = tmp_path / "fixtures"
+    sub.mkdir()
+    loaded = load(None, cwd=tmp_path)
+    r = resolve(
+        "claude",
+        loaded,
+        CliOverrides(mounts=[f"{sub}:/workspace/fixtures"]),
+        cwd=tmp_path,
+    )
+    # Default $PWD -> /workspace mount is still present.
+    assert any(
+        m.container == "/workspace" and m.host == tmp_path for m in r.mounts
+    )
+    assert any(m.container == "/workspace/fixtures" for m in r.mounts)

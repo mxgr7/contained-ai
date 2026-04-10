@@ -104,19 +104,19 @@ silently caught.
 
 ## Acceptance criteria
 
-- [ ] `contained run claude` from `$HOME` or `/` is refused with the
+- [x] `contained run claude` from `$HOME` or `/` is refused with the
       same message as an explicit `--mount $HOME:/workspace`.
-- [ ] A user mount at a container path like `/workspace/sub` no longer
+- [x] A user mount at a container path like `/workspace/sub` no longer
       suppresses the default `$PWD → /workspace` mount.
-- [ ] `ConnectPort 22` removed from `contained/assets/tinyproxy.conf`;
+- [x] `ConnectPort 22` removed from `contained/assets/tinyproxy.conf`;
       README deferred-features list updated.
-- [ ] `contained run claude` with `ANTHROPIC_API_KEY` unset on the
+- [x] `contained run claude` with `ANTHROPIC_API_KEY` unset on the
       host fails with a clear error naming the missing var and its
       source layer, in both live and `--dry-run` paths.
-- [ ] `proxy.start` has a regression test for network-create failure
+- [x] `proxy.start` has a regression test for network-create failure
       that asserts the tempfile is unlinked.
-- [ ] `runtime.RuntimeError` renamed; `grep -r "runtime.RuntimeError"`
+- [x] `runtime.RuntimeError` renamed; `grep -r "runtime.RuntimeError"`
       returns no hits; all existing tests still pass.
-- [ ] A new test in `tests/test_run.py` asserts `resolve()` refuses
+- [x] A new test in `tests/test_run.py` asserts `resolve()` refuses
       `cwd == "/"` and `cwd == Path.home()` via the default workspace
       mount.

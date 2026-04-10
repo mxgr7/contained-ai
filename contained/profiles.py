@@ -49,6 +49,7 @@ class AgentProfile:
     image: str
     entrypoint: list[str] = field(default_factory=list)
     env: list[str] = field(default_factory=list)
+    required_env: list[str] = field(default_factory=list)
     mounts: list[str] = field(default_factory=list)
     mounts_ro: list[str] = field(default_factory=list)
     allowlist: list[str] = field(default_factory=list)
@@ -65,6 +66,7 @@ CLAUDE = AgentProfile(
     image=BASE_IMAGE,
     entrypoint=["claude"],
     env=["ANTHROPIC_API_KEY", "CLAUDE_MODEL"],
+    required_env=["ANTHROPIC_API_KEY"],
     allowlist=["api.anthropic.com:443", "platform.claude.com:443"],
     state_mount="/home/agent/.claude",
     file_seeds=[

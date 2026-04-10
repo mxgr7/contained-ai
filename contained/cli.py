@@ -14,7 +14,7 @@ from pathlib import Path
 
 from . import __version__, doctor, profiles, runtime
 from .config import ConfigError, discover, load
-from .run import CliOverrides, render_dry_run, resolve
+from .run import CliOverrides, check_required_host_env, render_dry_run, resolve
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -169,20 +169,18 @@ def _cmd_run(args: argparse.Namespace, passthrough: list[str]) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
+    host_env = dict(os.environ)
+    missing = check_required_host_env(resolved, host_env)
+    if missing is not None:
+        print(f"error: {missing}", file=sys.stderr)
+        return 2
+
     if args.dry_run:
-        print(render_dry_run(resolved, dict(os.environ)))
+        print(render_dry_run(resolved, host_env))
         return 0
 
     for w in resolved.warnings:
         print(w, file=sys.stderr)
-
-    for spec in args.env:
-        if "=" not in spec and os.environ.get(spec) is None:
-            print(
-                f"error: --env {spec}: required but not set in host environment",
-                file=sys.stderr,
-            )
-            return 2
 
     if resolved.network == "allowlist":
         print(
@@ -198,7 +196,7 @@ def _cmd_run(args: argparse.Namespace, passthrough: list[str]) -> int:
 
     try:
         return runtime.run(resolved, cwd)
-    except runtime.RuntimeError as e:
+    except runtime.DockerError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
@@ -210,7 +208,7 @@ def _cmd_build(args: argparse.Namespace) -> int:
         # image always uses its canonical ref so `contained run` finds
         # it without extra plumbing.
         proxy_tag = runtime.build_proxy(rebuild=args.rebuild)
-    except runtime.RuntimeError as e:
+    except runtime.DockerError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     print(f"built {base_tag}")

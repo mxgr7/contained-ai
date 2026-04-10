@@ -37,6 +37,7 @@ class EnvVar:
     key: str
     value: str | None  # None => forward from host at run time
     from_host: bool
+    source: str = "tool defaults"
 
     def resolve_value(self, host_env: dict[str, str]) -> str | None:
         if self.from_host:
@@ -96,7 +97,9 @@ def resolve(
     profile = profiles.get(agent_name)
 
     # Layer 5: tool-wide defaults
-    env_strs: list[str] = list(profiles.TOOL_DEFAULT_ENV)
+    env_specs: list[tuple[str, str]] = [
+        (s, "tool defaults") for s in profiles.TOOL_DEFAULT_ENV
+    ]
     allow: list[str] = list(profiles.TOOL_DEFAULT_ALLOWLIST)
     mounts_rw: list[str] = []
     mounts_ro: list[str] = []
@@ -105,7 +108,7 @@ def resolve(
     image = profile.image
 
     # Layer 4: agent profile
-    env_strs = _merge_env(env_strs, profile.env)
+    env_specs = _merge_env(env_specs, profile.env, f"agent profile {profile.name!r}")
     allow = _union(allow, profile.allowlist)
     mounts_rw = _union(mounts_rw, profile.mounts)
     mounts_ro = _union(mounts_ro, profile.mounts_ro)
@@ -115,7 +118,7 @@ def resolve(
 
     # Layer 3: defaults section
     d = loaded.defaults
-    env_strs = _merge_env(env_strs, d.env)
+    env_specs = _merge_env(env_specs, d.env, "contained.yaml defaults")
     allow = _union(allow, d.allowlist)
     mounts_rw = _union(mounts_rw, d.mounts)
     mounts_ro = _union(mounts_ro, d.mounts_ro)
@@ -127,7 +130,9 @@ def resolve(
 
     # Layer 2: agents.<name>
     a = loaded.for_agent(agent_name)
-    env_strs = _merge_env(env_strs, a.env)
+    env_specs = _merge_env(
+        env_specs, a.env, f"contained.yaml agents.{agent_name}"
+    )
     allow = _union(allow, a.allowlist)
     mounts_rw = _union(mounts_rw, a.mounts)
     mounts_ro = _union(mounts_ro, a.mounts_ro)
@@ -138,8 +143,10 @@ def resolve(
         image = a.image
 
     # Layer 1: CLI flags
-    env_strs = _merge_env(env_strs, overrides.env)
-    env_strs = _merge_env(env_strs, _load_env_files(overrides.env_from))
+    env_specs = _merge_env(env_specs, overrides.env, "--env flag")
+    env_specs = _merge_env(
+        env_specs, _load_env_files(overrides.env_from), "--env-from file"
+    )
     allow = _union(allow, overrides.allow)
     mounts_rw = _union(mounts_rw, overrides.mounts)
     mounts_ro = _union(mounts_ro, overrides.mounts_ro)
@@ -148,21 +155,19 @@ def resolve(
     if overrides.image is not None:
         image = overrides.image
 
+    parsed_rw = [_parse_mount(m, loaded.base_dir, read_only=False) for m in mounts_rw]
+    parsed_ro = [_parse_mount(m, loaded.base_dir, read_only=True) for m in mounts_ro]
+    has_workspace = any(
+        m.container == "/workspace" for m in parsed_rw + parsed_ro
+    )
+
     mounts: list[Mount] = []
-    user_mounts: list[Mount] = []
-    has_workspace = any(":/workspace" in m or m.endswith(":/workspace") for m in mounts_rw + mounts_ro)
     if not has_workspace:
         mounts.append(_parse_mount(workspace_default, loaded.base_dir, read_only=False))
-    for m in mounts_rw:
-        parsed = _parse_mount(m, loaded.base_dir, read_only=False)
-        user_mounts.append(parsed)
-        mounts.append(parsed)
-    for m in mounts_ro:
-        parsed = _parse_mount(m, loaded.base_dir, read_only=True)
-        user_mounts.append(parsed)
-        mounts.append(parsed)
+    mounts.extend(parsed_rw)
+    mounts.extend(parsed_ro)
 
-    for m in user_mounts:
+    for m in mounts:
         _validate_mount_safety(m, allow_home=overrides.allow_home_mount)
         _require_host_path_exists(m)
 
@@ -186,9 +191,9 @@ def resolve(
                         )
                     )
 
-    env: list[EnvVar] = [_parse_env(e) for e in env_strs]
+    env: list[EnvVar] = [_parse_env(spec, src) for spec, src in env_specs]
 
-    warnings = _collect_warnings(user_mounts)
+    warnings = _collect_warnings(parsed_rw + parsed_ro)
     warnings.extend(_seed_warnings(planned_seeds))
 
     return ResolvedRun(
@@ -219,16 +224,20 @@ def _union(a: list[str], b: list[str]) -> list[str]:
     return out
 
 
-def _merge_env(a: list[str], b: list[str]) -> list[str]:
+def _merge_env(
+    a: list[tuple[str, str]], b: list[str], source: str
+) -> list[tuple[str, str]]:
     """Merge env specs, keyed by KEY. Later layer (b) wins on conflict."""
     def key_of(spec: str) -> str:
         return spec.split("=", 1)[0]
 
     b_keys = {key_of(s) for s in b}
-    out = [s for s in a if key_of(s) not in b_keys]
+    out = [(spec, src) for (spec, src) in a if key_of(spec) not in b_keys]
+    existing = {spec for spec, _ in out}
     for s in b:
-        if s not in out:
-            out.append(s)
+        if s not in existing:
+            out.append((s, source))
+            existing.add(s)
     return out
 
 
@@ -298,11 +307,36 @@ def _parse_mount(spec: str, base_dir: Path, *, read_only: bool) -> Mount:
     return Mount(host=host, container=container, read_only=read_only)
 
 
-def _parse_env(spec: str) -> EnvVar:
+def _parse_env(spec: str, source: str = "tool defaults") -> EnvVar:
     if "=" in spec:
         key, value = spec.split("=", 1)
-        return EnvVar(key=key, value=value, from_host=False)
-    return EnvVar(key=spec, value=None, from_host=True)
+        return EnvVar(key=key, value=value, from_host=False, source=source)
+    return EnvVar(key=spec, value=None, from_host=True, source=source)
+
+
+def check_required_host_env(
+    run: "ResolvedRun", host_env: dict[str, str]
+) -> str | None:
+    """Return an error message if a required from-host env var is unset.
+
+    An env var is "required" if it was named by a bare ``--env KEY`` CLI
+    flag, or if it appears in the agent profile's ``required_env`` list.
+    Best-effort forwards (tool defaults, optional profile envs like
+    ``CLAUDE_MODEL``) are skipped.
+    """
+    required_by_profile = set(run.agent.required_env)
+    for e in run.env:
+        if not e.from_host:
+            continue
+        required = e.source == "--env flag" or e.key in required_by_profile
+        if not required:
+            continue
+        if host_env.get(e.key) is None:
+            return (
+                f"--env {e.key}: required but not set in host environment "
+                f"(source: {e.source})"
+            )
+    return None
 
 
 def _load_env_files(paths: list[Path]) -> list[str]:

@@ -78,10 +78,10 @@ def start(run_id: str, allowlist: list[str], proxy_image: str) -> ProxySession:
     """
     network = f"contained-net-{run_id}"
     container = f"contained-proxy-{run_id}"
-    filter_path = write_filter_file(allowlist)
-
-    _run(["docker", "network", "create", "--internal", network])
+    filter_path: Path | None = None
     try:
+        filter_path = write_filter_file(allowlist)
+        _run(["docker", "network", "create", "--internal", network])
         _run([
             "docker", "run", "-d", "--rm",
             "--name", container,
@@ -95,7 +95,7 @@ def start(run_id: str, allowlist: list[str], proxy_image: str) -> ProxySession:
             network, container,
         ])
     except Exception:
-        stop(ProxySession(run_id, network, container, filter_path))
+        stop(ProxySession(run_id, network, container, filter_path or Path("/dev/null")))
         raise
     return ProxySession(run_id, network, container, filter_path)
 

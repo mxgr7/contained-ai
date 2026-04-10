@@ -254,8 +254,9 @@ Known limitations of the MVP approach:
 - **Agents that ignore `HTTPS_PROXY`** won't reach the network at all.
   That's intentional but will break tools until they pick up the env
   vars.
-- **Git over SSH** — tinyproxy's `ConnectPort 22` leaves the door
-  open but the MVP-supported path is git over HTTPS.
+- **Git over SSH** — not supported. tinyproxy's CONNECT allowlist is
+  HTTPS-only (port 443); SSH egress is an opt-in post-MVP follow-up.
+  Use git over HTTPS.
 
 For escape hatches, use `--network host` for a single run.
 

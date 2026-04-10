@@ -22,7 +22,7 @@ from .run import ResolvedRun
 from .state import state_root
 
 
-class RuntimeError(Exception):
+class DockerError(Exception):
     pass
 
 
@@ -31,7 +31,7 @@ OVERLAY_FROM_PLACEHOLDER = "contained-base"
 
 def ensure_daemon() -> None:
     if shutil.which("docker") is None:
-        raise RuntimeError(
+        raise DockerError(
             "docker binary not found in PATH. install Docker Desktop (macOS) "
             "or docker-ce (Linux), then re-run. see `contained doctor`."
         )
@@ -43,14 +43,14 @@ def ensure_daemon() -> None:
             timeout=10,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
-        raise RuntimeError(f"could not reach docker daemon: {e}") from e
+        raise DockerError(f"could not reach docker daemon: {e}") from e
     if result.returncode != 0:
         detail = (
             result.stderr.strip().splitlines()[-1]
             if result.stderr.strip()
             else "daemon unreachable"
         )
-        raise RuntimeError(
+        raise DockerError(
             f"docker daemon is not reachable: {detail}. "
             "on macOS, start Docker Desktop. see `contained doctor`."
         )
@@ -175,7 +175,7 @@ def build_overlay(
     source = dockerfile.read_text()
     placeholder = f"FROM {OVERLAY_FROM_PLACEHOLDER}"
     if placeholder not in source:
-        raise RuntimeError(
+        raise DockerError(
             f"{dockerfile}: first FROM must be `FROM {OVERLAY_FROM_PLACEHOLDER}`"
         )
     rewritten = source.replace(placeholder, f"FROM {base_image}", 1)
@@ -183,7 +183,7 @@ def build_overlay(
     cmd = ["docker", "build", "-t", tag, "-f", "-", str(dockerfile.parent)]
     result = subprocess.run(cmd, input=rewritten, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"overlay build failed for {dockerfile}")
+        raise DockerError(f"overlay build failed for {dockerfile}")
     return tag
 
 
@@ -222,7 +222,7 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
                 proxy.new_run_id(), resolved.allowlist, profiles.PROXY_IMAGE
             )
         except (proxy.ProxyError, OSError) as e:
-            raise RuntimeError(
+            raise DockerError(
                 f"failed to start egress proxy: {e}. "
                 "run `contained build` to build the proxy image, "
                 "or pass `--network host` to bypass the allowlist."
@@ -297,7 +297,7 @@ def _build_image(
     dockerfile: Path, tag: str, *, rebuild: bool, what: str
 ) -> str:
     if shutil.which("docker") is None:
-        raise RuntimeError(
+        raise DockerError(
             "docker binary not found in PATH. install Docker Desktop (macOS) "
             "or docker-ce (Linux), then re-run."
         )
@@ -307,5 +307,5 @@ def _build_image(
     cmd.append(str(dockerfile.parent))
     result = subprocess.run(cmd)
     if result.returncode != 0:
-        raise RuntimeError(f"{what} build failed (tag={tag})")
+        raise DockerError(f"{what} build failed (tag={tag})")
     return tag

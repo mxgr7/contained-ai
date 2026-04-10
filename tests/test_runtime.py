@@ -86,7 +86,7 @@ def test_build_argv_env_masking(tmp_path: Path):
 
 def test_ensure_daemon_missing_binary(monkeypatch):
     monkeypatch.setattr(runtime.shutil, "which", lambda _: None)
-    with pytest.raises(runtime.RuntimeError, match="docker binary not found"):
+    with pytest.raises(runtime.DockerError, match="docker binary not found"):
         runtime.ensure_daemon()
 
 
@@ -94,7 +94,7 @@ def test_ensure_daemon_daemon_down(monkeypatch):
     monkeypatch.setattr(runtime.shutil, "which", lambda _: "/usr/bin/docker")
     result = MagicMock(returncode=1, stderr="Cannot connect to the Docker daemon")
     monkeypatch.setattr(runtime.subprocess, "run", lambda *a, **k: result)
-    with pytest.raises(runtime.RuntimeError, match="not reachable"):
+    with pytest.raises(runtime.DockerError, match="not reachable"):
         runtime.ensure_daemon()
 
 
@@ -186,7 +186,7 @@ def test_build_overlay_rejects_bad_from(tmp_path: Path, monkeypatch):
     df.write_text("FROM debian:bookworm\n")
     monkeypatch.setattr(runtime, "_base_image_id", lambda img: img)
     monkeypatch.setattr(runtime, "_image_exists", lambda tag: False)
-    with pytest.raises(runtime.RuntimeError, match="FROM contained-base"):
+    with pytest.raises(runtime.DockerError, match="FROM contained-base"):
         runtime.build_overlay("claude", df, "base:1", rebuild=False)
 
 
@@ -235,7 +235,7 @@ def test_build_base_custom_tag_and_rebuild(monkeypatch):
 
 def test_build_base_missing_docker(monkeypatch):
     monkeypatch.setattr(runtime.shutil, "which", lambda _: None)
-    with pytest.raises(runtime.RuntimeError, match="docker binary not found"):
+    with pytest.raises(runtime.DockerError, match="docker binary not found"):
         runtime.build_base()
 
 
@@ -244,7 +244,7 @@ def test_build_base_failed(monkeypatch):
     monkeypatch.setattr(
         runtime.subprocess, "run", lambda *a, **k: MagicMock(returncode=2)
     )
-    with pytest.raises(runtime.RuntimeError, match="build failed"):
+    with pytest.raises(runtime.DockerError, match="build failed"):
         runtime.build_base()
 
 
@@ -349,7 +349,7 @@ def test_run_proxy_start_failure_surfaces_error(tmp_path: Path, monkeypatch):
         raise proxy.ProxyError("docker network create: boom")
 
     monkeypatch.setattr(proxy, "start", fail)
-    with pytest.raises(runtime.RuntimeError, match="egress proxy"):
+    with pytest.raises(runtime.DockerError, match="egress proxy"):
         runtime.run(_resolved(tmp_path), tmp_path)
 
 
