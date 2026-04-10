@@ -39,7 +39,7 @@ CLAUDE = AgentProfile(
     image=BASE_IMAGE,
     entrypoint=["claude"],
     env=["ANTHROPIC_API_KEY", "CLAUDE_MODEL"],
-    allowlist=["api.anthropic.com:443"],
+    allowlist=["api.anthropic.com:443", "platform.claude.com:443"],
     state_mount="/home/agent/.claude",
     credential_seeds={"~/.claude/.credentials.json": ".credentials.json"},
 )
