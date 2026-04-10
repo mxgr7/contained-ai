@@ -138,6 +138,10 @@ advanced users if and when we expose flags for them.
 
 ## Acceptance criteria (MVP)
 
+- [ ] `contained run <agent>` with no config file starts a working agent
+      session in `$PWD` (covers the case PRD 01 defers to here).
+- [ ] `contained run` in a directory with `contained.yaml` picks it up
+      and launches a container using the resolved config.
 - [ ] `contained` refuses to run with a clear error if Docker is not
       reachable.
 - [ ] The base image exists for `linux/amd64` and `linux/arm64` for each

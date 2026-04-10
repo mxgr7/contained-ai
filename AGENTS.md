@@ -64,23 +64,47 @@ the user first:
 
 ## Where things live
 
-- `docs/prd/` — PRDs, organized kanban-style:
-  - `todo/` — not yet implemented.
-  - `in_progress/` — currently being worked on.
-  - `done/` — shipped.
-  - Move PRD files between these directories as work progresses.
-- `docs/prd/todo/00-overview.md` — project overview, MVP roadmap, phase
-  breakdown. **Read this first.**
-- `docs/prd/todo/01-cli-and-config.md` — CLI surface and
-  `contained.yaml` schema.
-- `docs/prd/todo/02-container-runtime.md` — image strategy, lifecycle,
-  platform support, security posture.
-- `docs/prd/todo/03-mounts-and-state.md` — directory mounts, env
-  forwarding, state persistence layout.
-- `docs/prd/todo/04-networking.md` — allowlist model and proxy
-  strategy.
-- `docs/prd/todo/05-agents-and-auth.md` — agent profile concept and the
-  `claude` / `pi` profile specs.
+### PRDs
+
+`docs/prd/` is organized kanban-style: `todo/`, `in_progress/`, `done/`.
+Move files between these directories as work progresses. The numeric
+prefix is stable — **always refer to PRDs by number, not by path**,
+because paths change as PRDs ship.
+
+- `00-overview.md` — project overview, MVP roadmap, phase breakdown.
+  **Read this first.**
+- `01-cli-and-config.md` — CLI surface and `contained.yaml` schema.
+- `02-container-runtime.md` — image strategy, lifecycle, platform
+  support, security posture.
+- `03-mounts-and-state.md` — directory mounts, env forwarding, state
+  persistence layout.
+- `04-networking.md` — allowlist model and proxy strategy.
+- `05-agents-and-auth.md` — agent profile concept and the `claude` /
+  `pi` profile specs.
+
+### Code
+
+- `contained/` — the Python package.
+  - `cli.py` — argparse entry point, subcommand dispatch.
+  - `config.py` — `contained.yaml` discovery, parsing, validation.
+  - `profiles.py` — built-in agent profiles (`claude`, `pi`) and
+    tool-wide defaults.
+  - `run.py` — merges flags + config + profile into a `ResolvedRun`;
+    renders `--dry-run` output. Actual container launching lives here
+    once PRD 02 lands.
+  - `state.py` — per-project state dir resolution (XDG-aware).
+  - `doctor.py` — environment readiness checks.
+- `tests/` — pytest suite covering config, merge, CLI, dry-run.
+- `pyproject.toml` — package metadata; `contained` script entry point.
+
+### Development
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/pytest
+.venv/bin/contained run claude --dry-run   # smoke test
+```
 
 ## Conventions for agents editing this repo
 

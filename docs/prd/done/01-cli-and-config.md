@@ -148,15 +148,25 @@ later if users need to start from an empty list.
 This is the primary debugging tool; treat its output as part of the
 contract and don't break it casually.
 
-## Acceptance criteria (MVP)
+## Acceptance criteria
 
-- [ ] `contained run claude` with no config file starts a working Claude
-      Code session in `$PWD`.
-- [ ] `contained run` in a directory with `contained.yaml` picks it up.
-- [ ] A flag always overrides the corresponding config value.
-- [ ] Unknown keys in `contained.yaml` cause a clear error, not silent
+Scoped to what this PRD owns — the CLI surface and config loader.
+Criteria that require a running container (e.g. "starts a Claude Code
+session") live in `02-container-runtime.md`.
+
+- [x] `contained --version` and `contained --help` work.
+- [x] `contained run <agent>` accepts every flag listed above.
+- [x] `contained.yaml` is discovered by walking up from `$PWD`.
+- [x] `--config <path>` and `--no-config` override discovery.
+- [x] Merge precedence holds: flag > `agents.<name>` > `defaults` >
+      profile defaults > tool defaults.
+- [x] List-valued fields (`mounts`, `mounts_ro`, `allowlist`) union
+      across layers; `env` merges by key with the higher layer winning.
+- [x] Unknown keys in `contained.yaml` cause a clear error, not silent
       ignore.
-- [ ] `contained run --dry-run claude` prints a resolved config without
-      touching Docker.
-- [ ] `contained doctor` runs even when Docker is not reachable and reports
-      that fact clearly.
+- [x] `~` and `${VAR}` are expanded in config string values.
+- [x] `contained run --dry-run <agent>` prints the resolved config, the
+      env list with secrets masked, the allowlist, and a preview of the
+      `docker` invocation — without touching Docker.
+- [x] `contained doctor` runs to completion even when Docker is not
+      reachable and reports each check's status.
