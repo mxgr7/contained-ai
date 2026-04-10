@@ -67,6 +67,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="force rebuild of Dockerfile.contained overlay if present",
     )
     run_p.add_argument(
+        "--no-state", action="store_true",
+        help="do not mount per-project state dir (clean run, no persistence)",
+    )
+    run_p.add_argument(
+        "--allow-home-mount", action="store_true",
+        help="permit mounting the user's home directory as a mount source",
+    )
+    run_p.add_argument(
         "--dry-run", action="store_true",
         help="print resolved config without running anything",
     )
@@ -153,6 +161,8 @@ def _cmd_run(args: argparse.Namespace, passthrough: list[str]) -> int:
             image=args.image,
             passthrough=passthrough,
             rebuild=args.rebuild,
+            no_state=args.no_state,
+            allow_home_mount=args.allow_home_mount,
         )
         resolved = resolve(args.agent, loaded, overrides, cwd=cwd)
     except ConfigError as e:
@@ -162,6 +172,17 @@ def _cmd_run(args: argparse.Namespace, passthrough: list[str]) -> int:
     if args.dry_run:
         print(render_dry_run(resolved, dict(os.environ)))
         return 0
+
+    for w in resolved.warnings:
+        print(w, file=sys.stderr)
+
+    for spec in args.env:
+        if "=" not in spec and os.environ.get(spec) is None:
+            print(
+                f"error: --env {spec}: required but not set in host environment",
+                file=sys.stderr,
+            )
+            return 2
 
     try:
         return runtime.run(resolved, cwd)

@@ -16,7 +16,7 @@ import subprocess
 from importlib import resources
 from pathlib import Path
 
-from . import profiles
+from . import profiles, state
 from .run import ResolvedRun
 from .state import state_root
 
@@ -174,6 +174,9 @@ def build_overlay(
 
 def run(resolved: ResolvedRun, cwd: Path) -> int:
     ensure_daemon()
+
+    if not resolved.no_state and resolved.agent.state_mount is not None:
+        state.ensure_agent_state_dir(cwd, resolved.agent.name)
 
     overlay = find_overlay(resolved, cwd)
     if overlay is not None:

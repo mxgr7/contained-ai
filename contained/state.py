@@ -25,3 +25,22 @@ def project_id(project_path: Path) -> str:
 
 def project_state_dir(project_path: Path) -> Path:
     return state_root() / "projects" / project_id(project_path)
+
+
+def agent_state_dir(project_path: Path, agent_name: str) -> Path:
+    return project_state_dir(project_path) / agent_name
+
+
+def ensure_agent_state_dir(project_path: Path, agent_name: str) -> Path:
+    d = agent_state_dir(project_path, agent_name)
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        d.chmod(0o700)
+    except OSError:
+        pass
+    parent = d.parent
+    try:
+        parent.chmod(0o700)
+    except OSError:
+        pass
+    return d

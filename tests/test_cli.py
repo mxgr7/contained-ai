@@ -137,6 +137,36 @@ def test_build_command_custom_tag_rebuild(monkeypatch, capsys):
     assert seen == {"tag": "local/base:dev", "rebuild": True}
 
 
+def test_run_errors_on_unset_required_env(tmp_path: Path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TOTALLY_UNSET_VAR_XYZ", raising=False)
+    rc = cli.main(["run", "claude", "--env", "TOTALLY_UNSET_VAR_XYZ"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "TOTALLY_UNSET_VAR_XYZ" in err
+    assert "not set" in err
+
+
+def test_no_state_flag_reaches_runtime(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    from contained import runtime
+
+    seen: dict[str, object] = {}
+
+    def fake_run(resolved, cwd):
+        seen["no_state"] = resolved.no_state
+        seen["has_claude_mount"] = any(
+            m.container == "/home/agent/.claude" for m in resolved.mounts
+        )
+        return 0
+
+    monkeypatch.setattr(runtime, "run", fake_run)
+    rc = cli.main(["run", "claude", "--no-state"])
+    assert rc == 0
+    assert seen == {"no_state": True, "has_claude_mount": False}
+
+
 def test_doctor_runs_even_without_docker(capsys):
     rc = cli.main(["doctor"])
     assert rc == 0

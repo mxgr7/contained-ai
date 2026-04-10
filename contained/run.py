@@ -16,7 +16,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import profiles
+from . import profiles, state
 from .config import ConfigError, LoadedConfig
 from .profiles import AgentProfile
 
@@ -56,6 +56,8 @@ class ResolvedRun:
     passthrough_args: list[str] = field(default_factory=list)
     config_path: Path | None = None
     rebuild: bool = False
+    no_state: bool = False
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -71,6 +73,8 @@ class CliOverrides:
     image: str | None = None
     passthrough: list[str] = field(default_factory=list)
     rebuild: bool = False
+    no_state: bool = False
+    allow_home_mount: bool = False
 
 
 def resolve(
@@ -141,15 +145,32 @@ def resolve(
         image = overrides.image
 
     mounts: list[Mount] = []
+    user_mounts: list[Mount] = []
     has_workspace = any(":/workspace" in m or m.endswith(":/workspace") for m in mounts_rw + mounts_ro)
     if not has_workspace:
         mounts.append(_parse_mount(workspace_default, loaded.base_dir, read_only=False))
     for m in mounts_rw:
-        mounts.append(_parse_mount(m, loaded.base_dir, read_only=False))
+        parsed = _parse_mount(m, loaded.base_dir, read_only=False)
+        user_mounts.append(parsed)
+        mounts.append(parsed)
     for m in mounts_ro:
-        mounts.append(_parse_mount(m, loaded.base_dir, read_only=True))
+        parsed = _parse_mount(m, loaded.base_dir, read_only=True)
+        user_mounts.append(parsed)
+        mounts.append(parsed)
+
+    for m in user_mounts:
+        _validate_mount_safety(m, allow_home=overrides.allow_home_mount)
+        _require_host_path_exists(m)
+
+    state_mount: Mount | None = None
+    if not overrides.no_state and profile.state_mount is not None:
+        host = state.agent_state_dir(cwd, profile.name)
+        state_mount = Mount(host=host, container=profile.state_mount, read_only=False)
+        mounts.append(state_mount)
 
     env: list[EnvVar] = [_parse_env(e) for e in env_strs]
+
+    warnings = _collect_warnings(user_mounts)
 
     return ResolvedRun(
         agent=profile,
@@ -162,6 +183,8 @@ def resolve(
         passthrough_args=list(overrides.passthrough),
         config_path=loaded.path,
         rebuild=overrides.rebuild,
+        no_state=overrides.no_state,
+        warnings=warnings,
     )
 
 
@@ -186,6 +209,46 @@ def _merge_env(a: list[str], b: list[str]) -> list[str]:
     for s in b:
         if s not in out:
             out.append(s)
+    return out
+
+
+def _validate_mount_safety(m: Mount, *, allow_home: bool) -> None:
+    host = m.host
+    if str(host) == "/":
+        raise ConfigError("refusing to mount host root `/` as a mount source")
+    try:
+        home = Path.home()
+    except (RuntimeError, OSError):
+        home = None
+    if home is not None and host == home and not allow_home:
+        raise ConfigError(
+            f"refusing to mount home directory {host}. "
+            "pass --allow-home-mount if you really mean it."
+        )
+
+
+def _require_host_path_exists(m: Mount) -> None:
+    if not m.host.exists():
+        raise ConfigError(
+            f"mount source does not exist: {m.host} "
+            "(contained does not create missing host paths)"
+        )
+
+
+_SENSITIVE_DIR_HINTS = (".env", ".ssh", ".aws")
+
+
+def _collect_warnings(user_mounts: list[Mount]) -> list[str]:
+    out: list[str] = []
+    for m in user_mounts:
+        if m.read_only or not m.host.is_dir():
+            continue
+        for hint in _SENSITIVE_DIR_HINTS:
+            if (m.host / hint).exists():
+                out.append(
+                    f"warning: rw mount {m.host} contains {hint} — "
+                    "consider --mount-ro to avoid write access"
+                )
     return out
 
 
@@ -248,6 +311,8 @@ def render_dry_run(run: ResolvedRun, host_env: dict[str, str]) -> str:
     for m in run.mounts:
         tag = "ro" if m.read_only else "rw"
         lines.append(f"  - [{tag}] {m.host} -> {m.container}")
+    if run.no_state:
+        lines.append("  (state persistence disabled via --no-state)")
     lines.append("")
     lines.append("env:")
     for e in run.env:
@@ -261,4 +326,7 @@ def render_dry_run(run: ResolvedRun, host_env: dict[str, str]) -> str:
     from . import runtime  # local import to avoid cycle
     lines.append("docker invocation (preview):")
     lines.append("  " + " ".join(runtime.build_argv(run, mask_secrets=True)))
+    if run.warnings:
+        lines.append("")
+        lines.extend(run.warnings)
     return "\n".join(lines)

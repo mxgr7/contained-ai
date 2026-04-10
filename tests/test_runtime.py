@@ -242,6 +242,25 @@ def test_base_dockerfile_asset_present():
     assert "FROM debian" in path.read_text().splitlines()[10] or "FROM" in path.read_text()
 
 
+def test_run_creates_state_dir_before_launch(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(runtime, "ensure_daemon", lambda: None)
+    monkeypatch.setattr(runtime, "_execute", lambda argv: 0)
+    r = _resolved(tmp_path)
+    runtime.run(r, tmp_path)
+    state_mount = next(m for m in r.mounts if m.container == "/home/agent/.claude")
+    assert state_mount.host.is_dir()
+
+
+def test_run_skips_state_dir_creation_with_no_state(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(runtime, "ensure_daemon", lambda: None)
+    monkeypatch.setattr(runtime, "_execute", lambda argv: 0)
+    r = _resolved(tmp_path, no_state=True)
+    runtime.run(r, tmp_path)
+    assert not (tmp_path / "xdg" / "contained").exists()
+
+
 def test_run_builds_overlay_when_present(tmp_path: Path, monkeypatch):
     (tmp_path / "Dockerfile.contained").write_text("FROM contained-base\n")
     monkeypatch.setattr(runtime, "ensure_daemon", lambda: None)

@@ -23,6 +23,7 @@ class AgentProfile:
     mounts_ro: list[str] = field(default_factory=list)
     allowlist: list[str] = field(default_factory=list)
     workdir: str = "/workspace"
+    state_mount: str | None = None
 
 
 BASE_IMAGE = "ghcr.io/contained-ai/contained-base:edge"
@@ -32,8 +33,8 @@ CLAUDE = AgentProfile(
     image=BASE_IMAGE,
     entrypoint=["claude"],
     env=["ANTHROPIC_API_KEY", "CLAUDE_MODEL"],
-    mounts_ro=["~/.claude:/home/agent/.claude"],
     allowlist=["api.anthropic.com:443"],
+    state_mount="/home/agent/.claude",
 )
 
 PI = AgentProfile(
@@ -42,6 +43,7 @@ PI = AgentProfile(
     entrypoint=["pi"],
     env=["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
     allowlist=["api.openai.com:443", "api.anthropic.com:443"],
+    state_mount="/home/agent/.pi",
 )
 
 

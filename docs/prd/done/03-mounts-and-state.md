@@ -151,16 +151,23 @@ user explicitly wants a clean container (e.g. for reproducing a bug).
 
 ## Acceptance criteria (MVP)
 
-- [ ] `contained run claude` in an arbitrary directory bind-mounts that
+- [x] `contained run claude` in an arbitrary directory bind-mounts that
       directory to `/workspace` read-write.
-- [ ] Additional `--mount` and `--mount-ro` flags work and compose with
+- [x] Additional `--mount` and `--mount-ro` flags work and compose with
       config-file mounts.
-- [ ] Mounting `/` or `~` without the explicit opt-in flag fails with a
-      clear error.
-- [ ] No host env var reaches the container unless it's in the profile
-      defaults, the config, or a flag.
-- [ ] Env values are masked in `--dry-run` and error output.
-- [ ] Exiting and re-running `contained run claude` in the same project
-      preserves the agent's prior session history.
-- [ ] `--no-state` runs a clean container with no persisted state mounted.
-- [ ] Two different projects have independent state directories.
+- [x] Mounting `/` or `~` without the explicit opt-in flag
+      (`--allow-home-mount`) fails with a clear error.
+- [x] Nonexistent host mount sources are a hard error — `contained`
+      never silently `mkdir -p`s.
+- [x] No host env var reaches the container unless it's in the profile
+      defaults, the config, or a flag. `--env KEY` with no host value
+      is a hard error at run time.
+- [x] Env values are masked in `--dry-run` and error output.
+- [x] Exiting and re-running `contained run claude` in the same project
+      preserves the agent's prior session history. Mechanism: per-agent
+      state mount under `<project state>/claude/` bound rw into
+      `/home/agent/.claude`. This ships the PRD 05 "rw fallback" path;
+      full credential forwarding is PRD 05's job.
+- [x] `--no-state` runs a clean container with no persisted state mounted.
+- [x] Two different projects have independent state directories
+      (per-project state root keyed by path hash).
