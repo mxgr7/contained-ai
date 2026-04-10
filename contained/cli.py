@@ -12,7 +12,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import __version__, doctor, profiles
+from . import __version__, doctor, profiles, runtime
 from .config import ConfigError, discover, load
 from .run import CliOverrides, render_dry_run, resolve
 
@@ -79,6 +79,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="ignore any discovered contained.yaml",
     )
 
+    build_p = sub.add_parser(
+        "build",
+        help="build the shared base image locally",
+        description="Build the bundled Dockerfile.base and tag it as the "
+        "default agent base image (or --tag).",
+    )
+    build_p.add_argument(
+        "--tag", metavar="REF",
+        help=f"tag for the built image (default: {profiles.BASE_IMAGE})",
+    )
+    build_p.add_argument(
+        "--rebuild", action="store_true",
+        help="pass --no-cache to docker build",
+    )
+
     sub.add_parser("doctor", help="diagnose environment readiness")
     sub.add_parser("version", help="print version")
 
@@ -109,6 +124,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "run":
         return _cmd_run(args, passthrough)
+    if args.command == "build":
+        return _cmd_build(args)
 
     parser.error(f"unknown command: {args.command}")
     return 2  # unreachable
@@ -135,6 +152,7 @@ def _cmd_run(args: argparse.Namespace, passthrough: list[str]) -> int:
             allow=args.allow,
             image=args.image,
             passthrough=passthrough,
+            rebuild=args.rebuild,
         )
         resolved = resolve(args.agent, loaded, overrides, cwd=cwd)
     except ConfigError as e:
@@ -145,12 +163,21 @@ def _cmd_run(args: argparse.Namespace, passthrough: list[str]) -> int:
         print(render_dry_run(resolved, dict(os.environ)))
         return 0
 
-    print(
-        "error: launching containers is not implemented yet (PRD 02). "
-        "use --dry-run to inspect the resolved config.",
-        file=sys.stderr,
-    )
-    return 1
+    try:
+        return runtime.run(resolved, cwd)
+    except runtime.RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+
+def _cmd_build(args: argparse.Namespace) -> int:
+    try:
+        tag = runtime.build_base(args.tag, rebuild=args.rebuild)
+    except runtime.RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(f"built {tag}")
+    return 0
 
 
 if __name__ == "__main__":

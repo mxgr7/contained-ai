@@ -50,9 +50,12 @@ the user first:
   Modes are `allowlist` (default), `host`, `none`.
 - **Platforms:** macOS (Docker Desktop) and Linux. No Windows/WSL2 in
   MVP.
-- **Images:** one opinionated base image per agent, plus an optional
-  per-project `Dockerfile.contained` overlay that must `FROM
-  contained-base`. Multi-arch amd64/arm64.
+- **Images:** one shared opinionated base image
+  (`ghcr.io/contained-ai/contained-base:<tag>`) containing every
+  supported agent CLI, plus an optional per-project
+  `Dockerfile.contained` overlay that must `FROM contained-base`.
+  Multi-arch amd64/arm64. Buildable locally via `contained build`
+  against the bundled `contained/assets/Dockerfile.base`.
 - **Credentials:** forwarded from the host via mount/env, read-only
   where the agent allows it, scoped per profile (no cross-contamination
   between agents).

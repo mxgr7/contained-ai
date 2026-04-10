@@ -29,6 +29,9 @@ contained = "contained.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["contained"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"contained/assets" = "contained/assets"
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"

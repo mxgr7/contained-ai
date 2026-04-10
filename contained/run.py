@@ -55,6 +55,7 @@ class ResolvedRun:
     workdir: str = "/workspace"
     passthrough_args: list[str] = field(default_factory=list)
     config_path: Path | None = None
+    rebuild: bool = False
 
 
 @dataclass
@@ -69,6 +70,7 @@ class CliOverrides:
     allow: list[str] = field(default_factory=list)
     image: str | None = None
     passthrough: list[str] = field(default_factory=list)
+    rebuild: bool = False
 
 
 def resolve(
@@ -159,6 +161,7 @@ def resolve(
         workdir=profile.workdir,
         passthrough_args=list(overrides.passthrough),
         config_path=loaded.path,
+        rebuild=overrides.rebuild,
     )
 
 
@@ -255,29 +258,7 @@ def render_dry_run(run: ResolvedRun, host_env: dict[str, str]) -> str:
     for entry in run.allowlist:
         lines.append(f"  - {entry}")
     lines.append("")
+    from . import runtime  # local import to avoid cycle
     lines.append("docker invocation (preview):")
-    lines.append("  " + " ".join(_docker_preview(run)))
+    lines.append("  " + " ".join(runtime.build_argv(run, mask_secrets=True)))
     return "\n".join(lines)
-
-
-def _docker_preview(run: ResolvedRun) -> list[str]:
-    argv = ["docker", "run", "--rm", "-it", "--init"]
-    argv += ["--workdir", run.workdir]
-    for m in run.mounts:
-        argv += ["--mount", f"type=bind,src={m.host},dst={m.container}" + (",ro" if m.read_only else "")]
-    for e in run.env:
-        if e.from_host:
-            argv += ["--env", e.key]
-        else:
-            argv += ["--env", f"{e.key}={_mask(e.key, e.value)}"]
-    if run.network == "none":
-        argv += ["--network", "none"]
-    elif run.network == "host":
-        argv += ["--network", "host"]
-    else:
-        argv += ["--network", "contained-net"]
-    argv.append(run.image)
-    if run.agent.entrypoint:
-        argv += run.agent.entrypoint
-    argv += run.passthrough_args
-    return argv

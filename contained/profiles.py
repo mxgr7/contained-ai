@@ -25,9 +25,11 @@ class AgentProfile:
     workdir: str = "/workspace"
 
 
+BASE_IMAGE = "ghcr.io/contained-ai/contained-base:edge"
+
 CLAUDE = AgentProfile(
     name="claude",
-    image="ghcr.io/contained-ai/contained-claude:edge",
+    image=BASE_IMAGE,
     entrypoint=["claude"],
     env=["ANTHROPIC_API_KEY", "CLAUDE_MODEL"],
     mounts_ro=["~/.claude:/home/agent/.claude"],
@@ -36,7 +38,7 @@ CLAUDE = AgentProfile(
 
 PI = AgentProfile(
     name="pi",
-    image="ghcr.io/contained-ai/contained-pi:edge",
+    image=BASE_IMAGE,
     entrypoint=["pi"],
     env=["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
     allowlist=["api.openai.com:443", "api.anthropic.com:443"],

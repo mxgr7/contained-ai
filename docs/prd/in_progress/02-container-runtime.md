@@ -31,26 +31,54 @@ and exits non-zero. It does not try to start Docker Desktop for the user.
 
 ## Base image
 
-A single opinionated base image per agent, published to a public registry
-(e.g. `ghcr.io/<org>/contained-<agent>:<tag>`). The tag scheme and registry
-are an implementation detail and can change before 1.0.
+A **single shared base image** used by every agent profile, published to
+a public registry at `ghcr.io/contained-ai/contained-base:<tag>`. Agents
+differ only in their entrypoint and the credentials/mounts they require
+— the image itself contains all supported agent CLIs side by side. The
+tag scheme and registry are implementation details and can change
+before 1.0.
+
+Keeping one image avoids duplicated base layers, simplifies overlay
+caching (the `FROM contained-base` placeholder always resolves to the
+same ref), and lets the user install every supported agent with a
+single `contained build`.
 
 ### Contents (target)
 
-- A small, current Linux distribution (Debian slim or Ubuntu LTS).
+- A small, current Linux distribution (Debian slim).
 - A non-root user (`agent`, uid 1000) — the agent runs as this user.
-- `git`, `curl`, `ca-certificates`, `openssh-client`.
+- `git`, `curl`, `ca-certificates`, `openssh-client`, `tini`.
 - Recent Node.js and Python runtimes (agents commonly shell out to these).
-- The agent itself, pinned to a known version.
+- All MVP agent CLIs installed globally, pinned to known versions.
 - A minimal entrypoint that:
   - `cd`s into the configured workspace mount.
   - Drops any extra capabilities.
-  - Execs the agent with the passthrough args.
+  - Execs the selected agent with the passthrough args.
+
+### Local builds
+
+The repository ships `contained/assets/Dockerfile.base` and a
+`contained build` subcommand that builds it locally and tags the result
+as the default base image ref (or `--tag <ref>`). Use cases:
+
+- **Before a published image exists** — today, users `contained build`
+  once and then `contained run` works against the local image because
+  the tag matches the default ref.
+- **Customizing the base** — users can fork the Dockerfile, build with
+  `--tag` to a private ref, and point `contained.yaml` or `--image` at
+  it.
+- **Forcing a clean rebuild** — `contained build --rebuild` passes
+  `--no-cache` to `docker build`.
+
+Per-project customization that only needs extra packages should still
+use `Dockerfile.contained` overlays (see below) rather than forking the
+base image.
 
 ### Multi-arch
 
-Images must be published for both `linux/amd64` and `linux/arm64` so Apple
-Silicon users don't pay the emulation tax.
+The published image must exist for both `linux/amd64` and `linux/arm64`
+so Apple Silicon users don't pay the emulation tax. Local `contained
+build` produces whatever arch the host runs.
 
 ### Versioning
 
@@ -67,9 +95,9 @@ overlay on the base image.
 
 ### Rules
 
-- The overlay **must** start with `FROM contained-base` (a placeholder tag
-  that `contained` resolves to the actual base image for the selected
-  agent at build time).
+- The overlay **must** start with `FROM contained-base` (a placeholder
+  tag that `contained` resolves to the shared base image ref at build
+  time).
 - `contained` builds the overlay on the first `run` that needs it and
   caches the resulting image tag keyed by `(agent, content hash of
   Dockerfile.contained, base image digest)`.
@@ -138,17 +166,40 @@ advanced users if and when we expose flags for them.
 
 ## Acceptance criteria (MVP)
 
-- [ ] `contained run <agent>` with no config file starts a working agent
-      session in `$PWD` (covers the case PRD 01 defers to here).
-- [ ] `contained run` in a directory with `contained.yaml` picks it up
-      and launches a container using the resolved config.
-- [ ] `contained` refuses to run with a clear error if Docker is not
-      reachable.
-- [ ] The base image exists for `linux/amd64` and `linux/arm64` for each
-      supported agent.
-- [ ] An ephemeral `contained run claude` starts the agent as a non-root
-      user in an interactive TTY and exits cleanly on agent exit.
-- [ ] A project with `Dockerfile.contained` builds its overlay once,
-      reuses it on the next run, and rebuilds when the file changes.
-- [ ] `contained run --rebuild` forces a rebuild.
-- [ ] Ctrl-C is forwarded to the agent, not swallowed by `contained`.
+Code-side criteria (this PRD's ownership):
+
+- [x] `contained run` composes a `docker run` invocation with the
+      resolved config, workspace mount, non-root user, `--cap-drop ALL`,
+      `--security-opt no-new-privileges`, `--init`, and `--rm`.
+- [x] `contained run` refuses to run with a clear error if Docker is
+      not reachable (missing binary or daemon down).
+- [x] A project with `Dockerfile.contained` builds its overlay once,
+      reuses the cached image when the file and base image are
+      unchanged, and rebuilds when either changes.
+- [x] `contained run --rebuild` forces an overlay rebuild.
+- [x] Ctrl-C is not swallowed by `contained` — the Python parent shares
+      a process group with `docker` and waits on the child after
+      receiving SIGINT.
+- [x] `--dry-run` output and the real invocation share a single
+      `build_argv` code path so the preview can't drift from reality.
+
+Local-build path (satisfies end-to-end in the absence of a published
+image):
+
+- [x] `contained build` builds `contained/assets/Dockerfile.base` and
+      tags it as the default base image ref (or `--tag <ref>`).
+- [x] `contained build --rebuild` passes `--no-cache` to docker build.
+
+Blocked on base-image publishing (tracked separately):
+
+- [ ] A published `ghcr.io/contained-ai/contained-base` image exists
+      for `linux/amd64` and `linux/arm64`.
+- [ ] `contained run claude` works end-to-end in an empty directory
+      against the published image (without requiring `contained build`
+      first).
+
+Deferred to PRD 04 (networking):
+
+- [ ] `network: allowlist` actually restricts egress via the sidecar
+      proxy. Today the runtime falls back to the default bridge for
+      `allowlist` and only honours `host`/`none` strictly.

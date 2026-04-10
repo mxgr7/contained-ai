@@ -13,7 +13,9 @@ run one specific agent inside `contained`. A profile is a single Python
 module (or YAML manifest, TBD during implementation) that declares:
 
 - `name` — the string the user types after `contained run`.
-- `image` — the base image to use for this agent.
+- `image` — the base image to use for this agent. All MVP profiles
+  share `ghcr.io/contained-ai/contained-base:<tag>`; a profile only
+  overrides this if it genuinely needs a different image.
 - `entrypoint` — the command to run inside the container (e.g. the path
   to the `claude` or `pi` binary) and how to pass through user args.
 - `env` — the set of env vars this agent needs forwarded from the host.
@@ -44,8 +46,10 @@ work in MVP.
 
 ### Image
 
-`ghcr.io/<org>/contained-claude:<tag>`, built from the base image
-(`02-container-runtime.md`) with the Claude Code CLI installed.
+The shared `ghcr.io/contained-ai/contained-base:<tag>` — Claude Code is
+installed in the base image alongside the other MVP agents. See
+`02-container-runtime.md` for base image contents and the
+`contained build` local-build path.
 
 ### Entrypoint
 
@@ -95,9 +99,11 @@ at where Claude Code actually writes, not guessed.
 
 ### Image
 
-`ghcr.io/<org>/contained-pi:<tag>`, built from the base image with the
-`pi` coding-agent installed (via whatever install mechanism the upstream
-project supports — likely `npm` or a release binary).
+The shared `ghcr.io/contained-ai/contained-base:<tag>`. `pi` is
+installed in the base image alongside Claude Code — there is no
+per-agent image. Upstream install mechanism (npm, release binary, or
+git clone of `pi-mono/packages/coding-agent`) is TBD during Phase 1
+and lives in `contained/assets/Dockerfile.base`.
 
 ### Entrypoint
 
@@ -150,7 +156,7 @@ abstraction is intentionally flexible enough to accommodate whatever
 
 ```
 $ contained run claude
-contained: using image ghcr.io/contained-ai/contained-claude:0.1.0
+contained: using image ghcr.io/contained-ai/contained-base:0.1.0
 contained: mounting /Users/max/Projects/demo -> /workspace (rw)
 contained: mounting /Users/max/.claude -> /home/agent/.claude (ro)
 contained: state dir ~/.local/share/contained/projects/demo-3f2a9c/claude

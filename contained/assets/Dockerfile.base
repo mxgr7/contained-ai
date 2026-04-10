@@ -1,0 +1,50 @@
+# contained-base — shared base image for all agents.
+#
+# Opinionated layout from PRD 02: debian slim, non-root `agent` user,
+# recent node and python runtimes, git/curl/ca-certificates, plus the
+# agent CLIs themselves installed globally.
+#
+# Build locally with `contained build`; tagged as the default base ref
+# so `contained run` finds it without an explicit `--image`.
+
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    NODE_MAJOR=20
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        ca-certificates curl git gnupg openssh-client \
+        python3 python3-pip python3-venv \
+        tini \
+ && curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+# Non-root user. uid/gid 1000 matches the `--user` the runtime passes.
+RUN groupadd --gid 1000 agent \
+ && useradd  --uid 1000 --gid 1000 --create-home --shell /bin/bash agent \
+ && mkdir -p /workspace \
+ && chown agent:agent /workspace
+
+# Global npm prefix writable by the agent user so `npm i -g` works post-build.
+RUN mkdir -p /home/agent/.npm-global \
+ && chown -R agent:agent /home/agent/.npm-global
+ENV NPM_CONFIG_PREFIX=/home/agent/.npm-global \
+    PATH=/home/agent/.npm-global/bin:$PATH
+
+USER agent
+WORKDIR /workspace
+
+# Claude Code — published npm package.
+RUN npm install -g @anthropic-ai/claude-code
+
+# pi coding-agent — upstream install path is TBD (see PRD 05). Until
+# the user or a follow-up commit wires it up, `contained run pi` will
+# fail inside the container with "pi: not found". Replace this line
+# with the real install when ready.
+# RUN npm install -g <pi package or git ref>
+
+CMD ["bash"]
