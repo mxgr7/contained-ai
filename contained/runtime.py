@@ -176,7 +176,9 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
     ensure_daemon()
 
     if not resolved.no_state and resolved.agent.state_mount is not None:
-        state.ensure_agent_state_dir(cwd, resolved.agent.name)
+        state_dir = state.ensure_agent_state_dir(cwd, resolved.agent.name)
+        if resolved.agent.credential_seeds:
+            state.seed_credentials(state_dir, resolved.agent.credential_seeds)
 
     overlay = find_overlay(resolved, cwd)
     if overlay is not None:

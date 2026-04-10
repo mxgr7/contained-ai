@@ -24,6 +24,11 @@ class AgentProfile:
     allowlist: list[str] = field(default_factory=list)
     workdir: str = "/workspace"
     state_mount: str | None = None
+    # Host files to copy into the per-project state dir on first run so the
+    # agent finds its credentials without the container being able to
+    # rewrite the host's canonical copy. Maps host path (may start with ~)
+    # to a destination relative to the state mount root.
+    credential_seeds: dict[str, str] = field(default_factory=dict)
 
 
 BASE_IMAGE = "ghcr.io/contained-ai/contained-base:edge"
@@ -35,6 +40,7 @@ CLAUDE = AgentProfile(
     env=["ANTHROPIC_API_KEY", "CLAUDE_MODEL"],
     allowlist=["api.anthropic.com:443"],
     state_mount="/home/agent/.claude",
+    credential_seeds={"~/.claude/.credentials.json": ".credentials.json"},
 )
 
 PI = AgentProfile(

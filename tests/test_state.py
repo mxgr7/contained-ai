@@ -171,6 +171,70 @@ def test_sensitive_dir_warning_suppressed_when_ro(tmp_path: Path, monkeypatch):
     assert not any(".ssh" in w for w in r.warnings)
 
 
+def test_seed_credentials_copies_missing_file(tmp_path: Path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    host_src = tmp_path / "host" / ".credentials.json"
+    host_src.parent.mkdir()
+    host_src.write_text('{"token": "secret"}')
+    seeded = state.seed_credentials(
+        state_dir, {str(host_src): ".credentials.json"}
+    )
+    dst = state_dir / ".credentials.json"
+    assert dst.is_file()
+    assert dst.read_text() == '{"token": "secret"}'
+    assert seeded == [dst]
+    if os.name == "posix":
+        assert dst.stat().st_mode & 0o777 == 0o600
+
+
+def test_seed_credentials_skips_when_dst_exists(tmp_path: Path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / ".credentials.json").write_text("already-here")
+    host_src = tmp_path / "host.json"
+    host_src.write_text("new")
+    seeded = state.seed_credentials(
+        state_dir, {str(host_src): ".credentials.json"}
+    )
+    assert seeded == []
+    assert (state_dir / ".credentials.json").read_text() == "already-here"
+
+
+def test_seed_credentials_skips_missing_host_file(tmp_path: Path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    seeded = state.seed_credentials(
+        state_dir, {str(tmp_path / "nope"): ".credentials.json"}
+    )
+    assert seeded == []
+    assert not (state_dir / ".credentials.json").exists()
+
+
+def test_claude_profile_has_credential_seed():
+    from contained import profiles
+    assert profiles.CLAUDE.credential_seeds
+    assert ".credentials.json" in profiles.CLAUDE.credential_seeds.values()
+
+
+def test_runtime_seeds_credentials_before_launch(tmp_path: Path, monkeypatch):
+    from contained import runtime
+    _redirect_state(monkeypatch, tmp_path / "xdg")
+    fake_home = tmp_path / "home"
+    (fake_home / ".claude").mkdir(parents=True)
+    (fake_home / ".claude" / ".credentials.json").write_text('{"k":"v"}')
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setattr(runtime, "ensure_daemon", lambda: None)
+    monkeypatch.setattr(runtime, "_execute", lambda argv: 0)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    r = resolve("claude", _loaded(proj), CliOverrides(), cwd=proj)
+    runtime.run(r, proj)
+    state_dir = state.agent_state_dir(proj, "claude")
+    assert (state_dir / ".credentials.json").read_text() == '{"k":"v"}'
+
+
 def test_dry_run_shows_no_state_note(tmp_path: Path, monkeypatch):
     _redirect_state(monkeypatch, tmp_path / "xdg")
     r = resolve(

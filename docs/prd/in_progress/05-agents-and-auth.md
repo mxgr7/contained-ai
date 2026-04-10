@@ -171,14 +171,36 @@ there next time.
 
 ## Acceptance criteria (MVP)
 
-- [ ] `claude` profile registered and runnable.
-- [ ] `pi` profile registered and runnable.
-- [ ] Each profile only forwards its own env vars, not the other's
-      credentials.
-- [ ] Host credential file is mounted (read-only where possible) and
-      auth Just Works inside the container for both agents.
-- [ ] Session history persists across runs for both agents in the
-      per-project state dir.
-- [ ] Env values are masked in every place `contained` prints them.
-- [ ] Adding a third profile requires only a new profile file and a
+- [x] `claude` profile registered and runnable.
+- [ ] `pi` profile registered and runnable. *(Registered in
+      `contained/profiles.py`; installing `pi` in `Dockerfile.base` is
+      still a TODO — upstream install path TBD.)*
+- [x] Each profile only forwards its own env vars, not the other's
+      credentials. *(Enforced by per-profile `env` lists.)*
+- [x] Host credential file is mounted (read-only where possible) and
+      auth Just Works inside the container for both agents. *(claude:
+      `~/.claude/.credentials.json` is seeded into the per-project
+      state dir on first run via `state.seed_credentials`, giving the
+      agent a scoped writable copy of its credentials without exposing
+      the rest of the host's `~/.claude`. pi: seed list is empty until
+      pi's config path is pinned.)*
+- [x] Session history persists across runs for both agents in the
+      per-project state dir. *(PRD 03 state mount at
+      `/home/agent/.claude` and `/home/agent/.pi`.)*
+- [x] Env values are masked in every place `contained` prints them.
+      *(`_mask` in `contained/run.py` and `contained/runtime.py`.)*
+- [x] Adding a third profile requires only a new profile file and a
       registry entry — no changes to the core CLI or runtime code.
+      *(Add an `AgentProfile` constant in `contained/profiles.py` and
+      a line in `_PROFILES`.)*
+
+## Deferred
+
+- **pi install in `Dockerfile.base`.** The upstream install mechanism
+  for `pi-mono/packages/coding-agent` needs to be confirmed. Until
+  then, `contained run pi` will start the container but `pi` itself
+  will not be found. Tracked as a follow-up before MVP ships.
+- **Additional Claude auth endpoints in the allowlist.** Only
+  `api.anthropic.com:443` is enumerated today; any telemetry or OAuth
+  endpoints Claude Code hits will be added once PRD 04's proxy is in
+  place and we can observe denied hosts.
