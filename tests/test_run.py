@@ -63,7 +63,7 @@ def test_missing_agent_errors(tmp_path: Path):
         resolve(None, loaded, CliOverrides(), cwd=tmp_path)
 
 
-def test_env_value_masked_for_secrets(tmp_path: Path):
+def test_env_value_masked_for_cli_supplied(tmp_path: Path):
     loaded = load(None, cwd=tmp_path)
     r = resolve(
         "claude",
@@ -73,8 +73,34 @@ def test_env_value_masked_for_secrets(tmp_path: Path):
     )
     out = render_dry_run(r, host_env={})
     assert "supersecret" not in out
+    # Non-sensitive-looking LANG is *also* masked when user-supplied.
+    assert "en_US.UTF-8" not in out
     assert "***" in out
-    assert "en_US.UTF-8" in out
+
+
+def test_env_from_file_masked(tmp_path: Path):
+    envfile = tmp_path / ".env"
+    envfile.write_text("DATABASE_URL=postgres://pw@host/db\n")
+    loaded = load(None, cwd=tmp_path)
+    r = resolve(
+        "claude", loaded, CliOverrides(env_from=[envfile]), cwd=tmp_path
+    )
+    out = render_dry_run(r, host_env={})
+    assert "postgres://pw@host/db" not in out
+    assert "***" in out
+
+
+def test_env_from_malformed_does_not_echo_value(tmp_path: Path):
+    envfile = tmp_path / ".env"
+    envfile.write_text("GOOD=ok\nBADLINEVALUE\n")
+    loaded = load(None, cwd=tmp_path)
+    with pytest.raises(ConfigError) as ei:
+        resolve(
+            "claude", loaded, CliOverrides(env_from=[envfile]), cwd=tmp_path
+        )
+    msg = str(ei.value)
+    assert "BADLINEVALUE" not in msg
+    assert ":2" in msg
 
 
 def test_env_from_file(tmp_path: Path):
@@ -90,6 +116,39 @@ def test_env_from_file(tmp_path: Path):
     keys = {e.key: e.value for e in r.env}
     assert keys.get("FOO") == "bar"
     assert keys.get("BAZ") == "qux"
+
+
+def test_wildcard_allowlist_rejected(tmp_path: Path):
+    loaded = load(None, cwd=tmp_path)
+    with pytest.raises(ConfigError, match="wildcards are not supported"):
+        resolve(
+            "claude",
+            loaded,
+            CliOverrides(allow=["*.github.com:443"]),
+            cwd=tmp_path,
+        )
+
+
+def test_bad_allowlist_host_rejected(tmp_path: Path):
+    loaded = load(None, cwd=tmp_path)
+    with pytest.raises(ConfigError, match="invalid hostname"):
+        resolve(
+            "claude",
+            loaded,
+            CliOverrides(allow=["not a host:443"]),
+            cwd=tmp_path,
+        )
+
+
+def test_bad_allowlist_port_rejected(tmp_path: Path):
+    loaded = load(None, cwd=tmp_path)
+    with pytest.raises(ConfigError, match="port must be numeric"):
+        resolve(
+            "claude",
+            loaded,
+            CliOverrides(allow=["example.com:https"]),
+            cwd=tmp_path,
+        )
 
 
 def test_network_override(tmp_path: Path):

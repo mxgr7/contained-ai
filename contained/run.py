@@ -13,6 +13,7 @@ List-valued fields union across layers.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -155,6 +156,9 @@ def resolve(
     if overrides.image is not None:
         image = overrides.image
 
+    for entry in allow:
+        _validate_allowlist_entry(entry)
+
     parsed_rw = [_parse_mount(m, loaded.base_dir, read_only=False) for m in mounts_rw]
     parsed_ro = [_parse_mount(m, loaded.base_dir, read_only=True) for m in mounts_ro]
     has_workspace = any(
@@ -241,6 +245,33 @@ def _merge_env(
     return out
 
 
+_ALLOWLIST_HOST_RE = re.compile(
+    r"^[A-Za-z0-9]([A-Za-z0-9\-]{0,61}[A-Za-z0-9])?"
+    r"(\.[A-Za-z0-9]([A-Za-z0-9\-]{0,61}[A-Za-z0-9])?)*$"
+)
+
+
+def _validate_allowlist_entry(entry: str) -> None:
+    stripped = entry.strip()
+    if not stripped:
+        raise ConfigError("allowlist entries must not be empty")
+    host, _, port = stripped.partition(":")
+    if "*" in host or "?" in host:
+        raise ConfigError(
+            f"allowlist entry {entry!r}: wildcards are not supported. "
+            "list each hostname explicitly (e.g. `api.example.com:443`, "
+            "`foo.api.example.com:443`)."
+        )
+    if not _ALLOWLIST_HOST_RE.match(host):
+        raise ConfigError(
+            f"allowlist entry {entry!r}: invalid hostname {host!r}"
+        )
+    if port and not port.isdigit():
+        raise ConfigError(
+            f"allowlist entry {entry!r}: port must be numeric, got {port!r}"
+        )
+
+
 def _validate_mount_safety(m: Mount, *, allow_home: bool) -> None:
     host = m.host
     if str(host) == "/":
@@ -303,7 +334,16 @@ def _parse_mount(spec: str, base_dir: Path, *, read_only: bool) -> Mount:
     host_raw, container = spec.split(":", 1)
     host = Path(os.path.expanduser(os.path.expandvars(host_raw)))
     if not host.is_absolute():
-        host = (base_dir / host).resolve()
+        host = base_dir / host
+    try:
+        host = host.resolve(strict=True)
+    except FileNotFoundError as e:
+        raise ConfigError(
+            f"mount source does not exist: {host} "
+            "(contained does not create missing host paths)"
+        ) from e
+    except OSError as e:
+        raise ConfigError(f"mount source cannot be resolved: {host}: {e}") from e
     return Mount(host=host, container=container, read_only=read_only)
 
 
@@ -344,25 +384,39 @@ def _load_env_files(paths: list[Path]) -> list[str]:
     for p in paths:
         if not p.is_file():
             raise ConfigError(f"--env-from: no such file: {p}")
-        for raw in p.read_text().splitlines():
+        for lineno, raw in enumerate(p.read_text().splitlines(), start=1):
             line = raw.strip()
             if not line or line.startswith("#"):
                 continue
             if "=" not in line:
-                raise ConfigError(f"{p}: malformed env line: {raw!r}")
+                raise ConfigError(f"malformed env line at {p}:{lineno}")
             out.append(line)
     return out
 
 
-_SENSITIVE_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASS", "CREDENTIAL")
+_SENSITIVE_HINTS = (
+    "KEY", "TOKEN", "SECRET", "PASSWORD", "PASS", "CREDENTIAL",
+    "PAT", "DSN", "COOKIE", "BEARER", "AUTH",
+)
+_USER_SUPPLIED_SOURCES = ("--env flag", "--env-from file")
 
 
-def _mask(key: str, value: str | None) -> str:
-    if value is None:
+def mask_env_display(env_var: "EnvVar", value: str | None) -> str:
+    """Return the display-safe form of an env var value.
+
+    - Host-forwarded vars render as ``<from host>`` (the value never
+      passes through contained anyway).
+    - User-supplied concrete values (``--env``, ``--env-from``) are
+      always masked: treat anything the user typed as sensitive.
+    - Config-file-supplied values are masked by key-name heuristic.
+    """
+    if env_var.from_host:
         return "<from host>"
-    if any(h in key.upper() for h in _SENSITIVE_HINTS):
+    if env_var.source in _USER_SUPPLIED_SOURCES:
         return "***"
-    return value
+    if any(h in env_var.key.upper() for h in _SENSITIVE_HINTS):
+        return "***"
+    return value if value is not None else ""
 
 
 def render_dry_run(run: ResolvedRun, host_env: dict[str, str]) -> str:
@@ -387,7 +441,7 @@ def render_dry_run(run: ResolvedRun, host_env: dict[str, str]) -> str:
     lines.append("env:")
     for e in run.env:
         value = e.resolve_value(host_env)
-        lines.append(f"  - {e.key}={_mask(e.key, value)}")
+        lines.append(f"  - {e.key}={mask_env_display(e, value)}")
     lines.append("")
     lines.append(f"allowlist ({len(run.allowlist)}):")
     for entry in run.allowlist:

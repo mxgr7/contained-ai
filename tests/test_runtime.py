@@ -170,15 +170,67 @@ def test_build_overlay_rebuilds_when_forced(tmp_path: Path, monkeypatch):
     df.write_text("FROM contained-base\n")
     monkeypatch.setattr(runtime, "_base_image_id", lambda img: img)
     monkeypatch.setattr(runtime, "_image_exists", lambda tag: True)
-    calls: list[list[str]] = []
+    calls: list[tuple[list[str], str | None]] = []
 
-    def fake_run(cmd, **kw):
-        calls.append(cmd)
-        return MagicMock(returncode=0)
+    def fake_run(cmd, *, input_text=None):
+        calls.append((cmd, input_text))
+        return runtime._BuildResult(returncode=0, tail="")
 
-    monkeypatch.setattr(runtime.subprocess, "run", fake_run)
+    monkeypatch.setattr(runtime, "_run_capturing_tail", fake_run)
     runtime.build_overlay("claude", df, "base:1", rebuild=True)
-    assert calls and calls[0][:2] == ["docker", "build"]
+    assert calls and calls[0][0][:2] == ["docker", "build"]
+
+
+def test_build_overlay_pipes_rewritten_dockerfile(tmp_path: Path, monkeypatch):
+    df = tmp_path / "Dockerfile.contained"
+    df.write_text(
+        "# comment\n"
+        "\n"
+        "FROM contained-base AS build\n"
+        "RUN echo hi\n"
+        "FROM contained-base AS runtime\n"
+        "COPY --from=build /x /x\n"
+    )
+    monkeypatch.setattr(runtime, "_base_image_id", lambda img: img)
+    monkeypatch.setattr(runtime, "_image_exists", lambda tag: False)
+    captured: dict = {}
+
+    def fake_run(cmd, *, input_text=None):
+        captured["cmd"] = cmd
+        captured["input"] = input_text
+        return runtime._BuildResult(returncode=0, tail="")
+
+    monkeypatch.setattr(runtime, "_run_capturing_tail", fake_run)
+    runtime.build_overlay("claude", df, "base:1", rebuild=True)
+    text = captured["input"]
+    # Both stages were rewritten to point at the real base image.
+    assert "FROM contained-base" not in text
+    assert text.count("FROM base:1 AS build") == 1
+    assert text.count("FROM base:1 AS runtime") == 1
+    # Comment and content preserved in order.
+    assert text.startswith("# comment\n")
+    assert "RUN echo hi" in text
+    # docker build reads from stdin
+    assert "-f" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("-f") + 1] == "-"
+
+
+def test_build_overlay_rejects_non_from_first_instruction(tmp_path: Path, monkeypatch):
+    df = tmp_path / "Dockerfile.contained"
+    df.write_text("ARG FOO=1\nFROM contained-base\n")
+    monkeypatch.setattr(runtime, "_base_image_id", lambda img: img)
+    monkeypatch.setattr(runtime, "_image_exists", lambda tag: False)
+    with pytest.raises(runtime.DockerError, match="first instruction must be"):
+        runtime.build_overlay("claude", df, "base:1", rebuild=True)
+
+
+def test_build_overlay_rejects_wrong_base_with_quoted_line(tmp_path: Path, monkeypatch):
+    df = tmp_path / "Dockerfile.contained"
+    df.write_text("FROM debian:bookworm\nRUN true\n")
+    monkeypatch.setattr(runtime, "_base_image_id", lambda img: img)
+    monkeypatch.setattr(runtime, "_image_exists", lambda tag: False)
+    with pytest.raises(runtime.DockerError, match="FROM debian:bookworm"):
+        runtime.build_overlay("claude", df, "base:1", rebuild=True)
 
 
 def test_build_overlay_rejects_bad_from(tmp_path: Path, monkeypatch):
@@ -203,15 +255,20 @@ def test_run_end_to_end(tmp_path: Path, monkeypatch):
     assert captured["argv"][0] == "docker"
 
 
-def test_build_base_default_tag(monkeypatch):
-    monkeypatch.setattr(runtime.shutil, "which", lambda _: "/usr/bin/docker")
+def _mock_build(monkeypatch):
     calls: list[list[str]] = []
 
-    def fake_run(cmd, **kw):
+    def fake_run(cmd, *, input_text=None):
         calls.append(cmd)
-        return MagicMock(returncode=0)
+        return runtime._BuildResult(returncode=0, tail="")
 
-    monkeypatch.setattr(runtime.subprocess, "run", fake_run)
+    monkeypatch.setattr(runtime, "_run_capturing_tail", fake_run)
+    return calls
+
+
+def test_build_base_default_tag(monkeypatch):
+    monkeypatch.setattr(runtime.shutil, "which", lambda _: "/usr/bin/docker")
+    calls = _mock_build(monkeypatch)
     tag = runtime.build_base()
     assert tag == profiles.BASE_IMAGE
     assert calls[0][:2] == ["docker", "build"]
@@ -222,11 +279,7 @@ def test_build_base_default_tag(monkeypatch):
 
 def test_build_base_custom_tag_and_rebuild(monkeypatch):
     monkeypatch.setattr(runtime.shutil, "which", lambda _: "/usr/bin/docker")
-    calls: list[list[str]] = []
-    monkeypatch.setattr(
-        runtime.subprocess, "run",
-        lambda cmd, **kw: calls.append(cmd) or MagicMock(returncode=0),
-    )
+    calls = _mock_build(monkeypatch)
     tag = runtime.build_base("my/tag:dev", rebuild=True)
     assert tag == "my/tag:dev"
     assert "my/tag:dev" in calls[0]
@@ -242,10 +295,17 @@ def test_build_base_missing_docker(monkeypatch):
 def test_build_base_failed(monkeypatch):
     monkeypatch.setattr(runtime.shutil, "which", lambda _: "/usr/bin/docker")
     monkeypatch.setattr(
-        runtime.subprocess, "run", lambda *a, **k: MagicMock(returncode=2)
+        runtime,
+        "_run_capturing_tail",
+        lambda cmd, *, input_text=None: runtime._BuildResult(
+            returncode=2, tail="step 3/5: /bin/sh -c apt-get install cruft\nE: Unable to locate package cruft"
+        ),
     )
-    with pytest.raises(runtime.DockerError, match="build failed"):
+    with pytest.raises(runtime.DockerError) as ei:
         runtime.build_base()
+    msg = str(ei.value)
+    assert "build failed" in msg
+    assert "Unable to locate package cruft" in msg
 
 
 def test_base_dockerfile_asset_present():
@@ -279,7 +339,7 @@ def test_run_starts_and_stops_proxy_in_allowlist(tmp_path: Path, monkeypatch):
     started: list[tuple] = []
     stopped: list[proxy.ProxySession] = []
 
-    def fake_start(run_id, allowlist, image):
+    def fake_start(run_id, allowlist, image, *, state_dir=None):
         s = proxy.ProxySession(
             run_id, f"contained-net-{run_id}", f"contained-proxy-{run_id}",
             tmp_path / "filter.txt",
@@ -355,11 +415,7 @@ def test_run_proxy_start_failure_surfaces_error(tmp_path: Path, monkeypatch):
 
 def test_build_proxy_uses_proxy_dockerfile(monkeypatch):
     monkeypatch.setattr(runtime.shutil, "which", lambda _: "/usr/bin/docker")
-    calls: list[list[str]] = []
-    monkeypatch.setattr(
-        runtime.subprocess, "run",
-        lambda cmd, **kw: calls.append(cmd) or MagicMock(returncode=0),
-    )
+    calls = _mock_build(monkeypatch)
     tag = runtime.build_proxy()
     assert tag == profiles.PROXY_IMAGE
     assert "Dockerfile.proxy" in calls[0][calls[0].index("-f") + 1]

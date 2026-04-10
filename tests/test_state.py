@@ -127,6 +127,33 @@ def test_allow_home_mount_flag_permits(tmp_path: Path, monkeypatch):
     assert any(m.container == "/mnt/home" for m in r.mounts)
 
 
+def test_refuse_symlink_to_root_mount(tmp_path: Path):
+    link = tmp_path / "link-to-root"
+    link.symlink_to("/")
+    with pytest.raises(ConfigError, match="root"):
+        resolve(
+            "claude",
+            _loaded(tmp_path),
+            CliOverrides(mounts=[f"{link}:/mnt/x"]),
+            cwd=tmp_path,
+        )
+
+
+def test_refuse_symlink_to_home_mount(tmp_path: Path, monkeypatch):
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    link = tmp_path / "link-to-home"
+    link.symlink_to(fake_home)
+    with pytest.raises(ConfigError, match="home directory"):
+        resolve(
+            "claude",
+            _loaded(tmp_path),
+            CliOverrides(mounts=[f"{link}:/mnt/home"]),
+            cwd=tmp_path,
+        )
+
+
 def test_nonexistent_mount_source_errors(tmp_path: Path):
     missing = tmp_path / "nope"
     with pytest.raises(ConfigError, match="does not exist"):
@@ -301,6 +328,39 @@ def test_resolve_adds_bind_mount_for_claude_json(tmp_path: Path, monkeypatch):
     # Credentials live under the state_mount dir so they shouldn't get
     # their own file bind.
     assert "/home/agent/.claude/.credentials.json" not in mounts_by_container
+
+
+def test_runtime_prints_seed_notice(tmp_path: Path, monkeypatch, capsys):
+    from contained import runtime
+    _force_keychain_miss(monkeypatch)
+    _redirect_state(monkeypatch, tmp_path / "xdg")
+    fake_home = tmp_path / "home"
+    (fake_home / ".claude").mkdir(parents=True)
+    (fake_home / ".claude" / ".credentials.json").write_text('{"k":"v"}')
+    (fake_home / ".claude.json").write_text('{"onboarded": true}')
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setattr(runtime, "ensure_daemon", lambda: None)
+    monkeypatch.setattr(runtime, "_execute", lambda argv: 0)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    r = resolve(
+        "claude", _loaded(proj), CliOverrides(network="none"), cwd=proj
+    )
+    runtime.run(r, proj)
+    err = capsys.readouterr().err
+    assert "contained: seeded" in err
+    assert "-> " in err
+    assert "mode 600" in err
+
+
+def test_read_source_rejects_symlink_file(tmp_path: Path):
+    real = tmp_path / "real.json"
+    real.write_text("secret")
+    link = tmp_path / "link.json"
+    link.symlink_to(real)
+    assert state._read_source(str(link)) is None
+    assert state._read_source(str(real)) == b"secret"
 
 
 def test_runtime_seeds_credentials_before_launch(tmp_path: Path, monkeypatch):

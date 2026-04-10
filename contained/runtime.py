@@ -14,16 +14,66 @@ import hashlib
 import shutil
 import subprocess
 import sys
+from collections import deque
+from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 
 from . import profiles, proxy, state
-from .run import ResolvedRun
+from .run import ResolvedRun, mask_env_display
 from .state import state_root
 
 
 class DockerError(Exception):
     pass
+
+
+@dataclass
+class _BuildResult:
+    returncode: int
+    tail: str
+
+
+_BUILD_TAIL_LINES = 30
+
+
+def _run_capturing_tail(
+    cmd: list[str], *, input_text: str | None = None
+) -> _BuildResult:
+    """Run a build command with stderr streamed AND the last N lines buffered.
+
+    stdout is inherited (docker build writes progress there on BuildKit),
+    stderr is captured line-by-line, echoed to our stderr, and the last
+    ``_BUILD_TAIL_LINES`` lines are retained for error messages.
+    """
+    stdin = subprocess.PIPE if input_text is not None else None
+    proc = subprocess.Popen(
+        cmd,
+        stdin=stdin,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    tail: deque[str] = deque(maxlen=_BUILD_TAIL_LINES)
+
+    if input_text is not None and proc.stdin is not None:
+        try:
+            proc.stdin.write(input_text)
+        finally:
+            proc.stdin.close()
+
+    assert proc.stderr is not None
+    for line in proc.stderr:
+        sys.stderr.write(line)
+        tail.append(line.rstrip("\n"))
+    proc.wait()
+    return _BuildResult(returncode=proc.returncode, tail="\n".join(tail))
+
+
+def _indent_tail(tail: str) -> str:
+    if not tail.strip():
+        return "  (no stderr output)"
+    return "\n".join("  " + line for line in tail.splitlines())
 
 
 OVERLAY_FROM_PLACEHOLDER = "contained-base"
@@ -78,7 +128,7 @@ def build_argv(
         if e.from_host:
             argv += ["--env", e.key]
         else:
-            value = _mask(e.key, e.value) if mask_secrets else (e.value or "")
+            value = mask_env_display(e, e.value) if mask_secrets else (e.value or "")
             argv += ["--env", f"{e.key}={value}"]
     if run.network == "host":
         argv += ["--network", "host"]
@@ -99,17 +149,6 @@ def build_argv(
         argv += run.agent.entrypoint
     argv += run.passthrough_args
     return argv
-
-
-_SENSITIVE_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASS", "CREDENTIAL")
-
-
-def _mask(key: str, value: str | None) -> str:
-    if value is None:
-        return ""
-    if any(h in key.upper() for h in _SENSITIVE_HINTS):
-        return "***"
-    return value
 
 
 def find_overlay(resolved: ResolvedRun, cwd: Path) -> Path | None:
@@ -172,19 +211,75 @@ def build_overlay(
     if not rebuild and _image_exists(tag):
         return tag
 
-    source = dockerfile.read_text()
-    placeholder = f"FROM {OVERLAY_FROM_PLACEHOLDER}"
-    if placeholder not in source:
-        raise DockerError(
-            f"{dockerfile}: first FROM must be `FROM {OVERLAY_FROM_PLACEHOLDER}`"
-        )
-    rewritten = source.replace(placeholder, f"FROM {base_image}", 1)
+    rewritten = _rewrite_overlay_from(
+        dockerfile.read_text(), dockerfile, base_image
+    )
 
     cmd = ["docker", "build", "-t", tag, "-f", "-", str(dockerfile.parent)]
-    result = subprocess.run(cmd, input=rewritten, text=True)
+    result = _run_capturing_tail(cmd, input_text=rewritten)
     if result.returncode != 0:
-        raise DockerError(f"overlay build failed for {dockerfile}")
+        raise DockerError(
+            f"overlay build failed for {dockerfile}\n"
+            f"{_indent_tail(result.tail)}"
+        )
     return tag
+
+
+def _rewrite_overlay_from(
+    source: str, dockerfile: Path, base_image: str
+) -> str:
+    """Replace every ``FROM contained-base`` instruction with the real base.
+
+    The very first instruction encountered must be a ``FROM`` whose
+    image is exactly the placeholder — otherwise the overlay wouldn't
+    actually be layered on our sandbox base, which is the whole point
+    of the placeholder.
+    """
+    out_lines: list[str] = []
+    first_instruction_seen = False
+    for line in source.splitlines():
+        stripped = line.lstrip()
+        # Skip blanks and comments when hunting for the first instruction.
+        if not first_instruction_seen and (not stripped or stripped.startswith("#")):
+            out_lines.append(line)
+            continue
+        tokens = stripped.split()
+        if tokens and tokens[0].upper() == "FROM":
+            image = tokens[1] if len(tokens) > 1 else ""
+            if not first_instruction_seen:
+                first_instruction_seen = True
+                if image != OVERLAY_FROM_PLACEHOLDER:
+                    raise DockerError(
+                        f"{dockerfile}: first FROM must be "
+                        f"`FROM {OVERLAY_FROM_PLACEHOLDER}` (got: {line.strip()!r}). "
+                        "contained rewrites that line at build time to pin the "
+                        "real sandbox base image, so your overlay layers on top "
+                        "of the hardened base."
+                    )
+                out_lines.append(line.replace(
+                    OVERLAY_FROM_PLACEHOLDER, base_image, 1
+                ))
+                continue
+            # Subsequent stage: rewrite only if it references the placeholder.
+            if image == OVERLAY_FROM_PLACEHOLDER:
+                out_lines.append(line.replace(
+                    OVERLAY_FROM_PLACEHOLDER, base_image, 1
+                ))
+                continue
+            out_lines.append(line)
+            continue
+        if not first_instruction_seen:
+            # Non-FROM first instruction is illegal in Dockerfiles anyway.
+            raise DockerError(
+                f"{dockerfile}: first instruction must be "
+                f"`FROM {OVERLAY_FROM_PLACEHOLDER}` (got: {line.strip()!r})"
+            )
+        out_lines.append(line)
+    if not first_instruction_seen:
+        raise DockerError(
+            f"{dockerfile}: no FROM instruction found"
+        )
+    return "\n".join(out_lines) + ("\n" if source.endswith("\n") else "")
 
 
 def run(resolved: ResolvedRun, cwd: Path) -> int:
@@ -196,12 +291,9 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
     if resolved.planned_seeds:
         written = state.apply_seeds(resolved.planned_seeds)
         for p in written:
-            if p.source is not None:
-                origin = p.source
-            else:
-                origin = "empty placeholder"
+            origin = p.source if p.source is not None else "empty placeholder"
             print(
-                f"contained: seeded {p.seed.container_path} ({origin})",
+                f"contained: seeded {origin} -> {p.host_path} (mode 600)",
                 file=sys.stderr,
             )
 
@@ -217,11 +309,25 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
 
     session: proxy.ProxySession | None = None
     if resolved.network == "allowlist":
+        filter_dir: Path | None = None
+        if not resolved.no_state:
+            filter_dir = state.project_state_dir(cwd)
+            filter_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                filter_dir.chmod(0o700)
+            except OSError:
+                pass
         try:
             session = proxy.start(
-                proxy.new_run_id(), resolved.allowlist, profiles.PROXY_IMAGE
+                proxy.new_run_id(),
+                resolved.allowlist,
+                profiles.PROXY_IMAGE,
+                state_dir=filter_dir,
             )
         except (proxy.ProxyError, OSError) as e:
+            # OSError shows up when docker itself isn't on PATH, which
+            # typically means the user skipped `contained build`. We want
+            # the same hint either way.
             raise DockerError(
                 f"failed to start egress proxy: {e}. "
                 "run `contained build` to build the proxy image, "
@@ -305,7 +411,9 @@ def _build_image(
     if rebuild:
         cmd.append("--no-cache")
     cmd.append(str(dockerfile.parent))
-    result = subprocess.run(cmd)
+    result = _run_capturing_tail(cmd)
     if result.returncode != 0:
-        raise DockerError(f"{what} build failed (tag={tag})")
+        raise DockerError(
+            f"{what} build failed (tag={tag})\n{_indent_tail(result.tail)}"
+        )
     return tag

@@ -168,10 +168,15 @@ def _read_source(source: str) -> bytes | None:
     expanded = os.path.expanduser(os.path.expandvars(source))
     path = Path(expanded)
     try:
-        if path.is_symlink():
-            return None
-        if not path.is_file():
-            return None
+        st = os.lstat(path)
+    except OSError:
+        return None
+    import stat as _stat
+    if not _stat.S_ISREG(st.st_mode):
+        # Reject symlinks, directories, devices, fifos: we only seed
+        # from regular files the user explicitly placed on disk.
+        return None
+    try:
         return path.read_bytes()
     except OSError:
         return None

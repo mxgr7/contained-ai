@@ -16,6 +16,7 @@ to the outside world; only the proxy straddles both networks.
 
 from __future__ import annotations
 
+import os
 import re
 import secrets
 import subprocess
@@ -48,12 +49,18 @@ def new_run_id() -> str:
     return secrets.token_hex(4)
 
 
-def write_filter_file(allowlist: list[str]) -> Path:
+def write_filter_file(allowlist: list[str], *, state_dir: Path | None = None) -> Path:
     """Write a tinyproxy Filter file containing one anchored regex per host.
 
-    Each allowlist entry is of the form `host` or `host:port`; we only
-    filter on the hostname since tinyproxy's Filter matches CONNECT by
-    hostname, not port.
+    Each allowlist entry is of the form `host` or `host:port`. Tinyproxy
+    matches the Filter regex against the full CONNECT target, which
+    includes the port (`github.com:443`), so we anchor with an optional
+    `:<port>` suffix to match regardless of whether the client includes
+    one.
+
+    The file is created under ``state_dir`` (already 0700) when provided
+    so the filter contents don't sit in world-readable ``/tmp``. The fd
+    from ``mkstemp`` is used directly to avoid a re-open race.
     """
     lines: list[str] = []
     seen: set[str] = set()
@@ -62,15 +69,23 @@ def write_filter_file(allowlist: list[str]) -> Path:
         if not host or host in seen:
             continue
         seen.add(host)
-        lines.append(f"^{re.escape(host)}$")
-    fd, path = tempfile.mkstemp(prefix="contained-filter-", suffix=".txt")
-    Path(path).write_text("\n".join(lines) + "\n")
-    import os
-    os.close(fd)
+        lines.append(rf"^{re.escape(host)}(:[0-9]+)?$")
+    mkstemp_dir = str(state_dir) if state_dir is not None else None
+    fd, path = tempfile.mkstemp(
+        prefix="contained-filter-", suffix=".txt", dir=mkstemp_dir
+    )
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(lines) + "\n")
     return Path(path)
 
 
-def start(run_id: str, allowlist: list[str], proxy_image: str) -> ProxySession:
+def start(
+    run_id: str,
+    allowlist: list[str],
+    proxy_image: str,
+    *,
+    state_dir: Path | None = None,
+) -> ProxySession:
     """Create the private network and start the proxy container.
 
     Caller must invoke `stop()` on the returned session, even on error
@@ -80,7 +95,7 @@ def start(run_id: str, allowlist: list[str], proxy_image: str) -> ProxySession:
     container = f"contained-proxy-{run_id}"
     filter_path: Path | None = None
     try:
-        filter_path = write_filter_file(allowlist)
+        filter_path = write_filter_file(allowlist, state_dir=state_dir)
         _run(["docker", "network", "create", "--internal", network])
         _run([
             "docker", "run", "-d", "--rm",

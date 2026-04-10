@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from contained import proxy
+from contained import proxy, profiles, runtime
 
 
 def test_write_filter_file_escapes_and_dedupes(tmp_path: Path):
@@ -14,7 +16,10 @@ def test_write_filter_file_escapes_and_dedupes(tmp_path: Path):
     )
     try:
         lines = [ln for ln in path.read_text().splitlines() if ln]
-        assert lines == [r"^api\.anthropic\.com$", r"^github\.com$"]
+        assert lines == [
+            r"^api\.anthropic\.com(:[0-9]+)?$",
+            r"^github\.com(:[0-9]+)?$",
+        ]
     finally:
         path.unlink(missing_ok=True)
 
@@ -23,7 +28,17 @@ def test_write_filter_file_skips_blank(tmp_path: Path):
     path = proxy.write_filter_file(["", "  ", "example.com:443"])
     try:
         lines = [ln for ln in path.read_text().splitlines() if ln]
-        assert lines == [r"^example\.com$"]
+        assert lines == [r"^example\.com(:[0-9]+)?$"]
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_write_filter_file_honors_state_dir(tmp_path: Path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    path = proxy.write_filter_file(["example.com:443"], state_dir=state_dir)
+    try:
+        assert path.parent == state_dir
     finally:
         path.unlink(missing_ok=True)
 
@@ -82,8 +97,8 @@ def test_start_cleans_up_filter_on_network_create_failure(monkeypatch, tmp_path)
 
     real_write = proxy.write_filter_file
 
-    def tracking_write(allowlist):
-        p = real_write(allowlist)
+    def tracking_write(allowlist, *, state_dir=None):
+        p = real_write(allowlist, state_dir=state_dir)
         tempfiles.append(p)
         return p
 
@@ -101,6 +116,50 @@ def test_start_cleans_up_filter_on_network_create_failure(monkeypatch, tmp_path)
     assert tempfiles, "write_filter_file was not invoked"
     for p in tempfiles:
         assert not p.exists(), f"tempfile leaked: {p}"
+
+
+def _docker_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    try:
+        r = subprocess.run(
+            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            capture_output=True,
+            timeout=5,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return r.returncode == 0
+
+
+@pytest.mark.skipif(not _docker_available(), reason="docker not available")
+def test_proxy_allowlist_end_to_end():
+    """Start a real proxy with a two-host allowlist and curl through it."""
+    runtime.build_proxy()
+    session = proxy.start(
+        proxy.new_run_id(),
+        ["example.com:443"],
+        profiles.PROXY_IMAGE,
+    )
+    try:
+        def curl(host: str) -> int:
+            return subprocess.run(
+                [
+                    "docker", "run", "--rm", "--network", session.network,
+                    "-e", f"HTTPS_PROXY=http://proxy:8888",
+                    "-e", f"HTTP_PROXY=http://proxy:8888",
+                    "curlimages/curl:latest",
+                    "-sS", "-o", "/dev/null", "-m", "15",
+                    f"https://{host}/",
+                ],
+                capture_output=True,
+                timeout=60,
+            ).returncode
+
+        assert curl("example.com") == 0, "allowed host failed"
+        assert curl("www.iana.org") != 0, "denied host succeeded"
+    finally:
+        proxy.stop(session)
 
 
 def test_stop_is_best_effort(monkeypatch, tmp_path):
