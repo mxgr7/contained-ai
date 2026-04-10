@@ -113,6 +113,7 @@ def resolve(
     allow = _union(allow, profile.allowlist)
     mounts_rw = _union(mounts_rw, profile.mounts)
     mounts_ro = _union(mounts_ro, profile.mounts_ro)
+    args = args + list(profile.args)
     # Default workspace mount: $PWD → /workspace rw. Added only if nothing
     # already mounts /workspace from a higher-priority layer.
     workspace_default = f"{cwd}:/workspace"

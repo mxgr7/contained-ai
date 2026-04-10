@@ -52,6 +52,7 @@ class AgentProfile:
     required_env: list[str] = field(default_factory=list)
     mounts: list[str] = field(default_factory=list)
     mounts_ro: list[str] = field(default_factory=list)
+    args: list[str] = field(default_factory=list)
     allowlist: list[str] = field(default_factory=list)
     workdir: str = "/workspace"
     state_mount: str | None = None
@@ -66,6 +67,12 @@ CLAUDE = AgentProfile(
     image=BASE_IMAGE,
     entrypoint=["claude"],
     env=["ANTHROPIC_API_KEY", "CLAUDE_MODEL"],
+    # The container is already sandboxed (no host fs access, egress
+    # allowlist, non-root, cap-drop all), so Claude's per-call permission
+    # gating adds friction without meaningful protection. Default to
+    # bypassPermissions; override in contained.yaml if a project wants
+    # the interactive prompts back.
+    args=["--permission-mode", "bypassPermissions"],
     allowlist=["api.anthropic.com:443", "platform.claude.com:443"],
     state_mount="/home/agent/.claude",
     file_seeds=[

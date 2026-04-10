@@ -74,19 +74,36 @@ def test_args_agent_appended_to_cli_passthrough(tmp_path: Path, monkeypatch):
         """
 agents:
   claude:
-    args: [--permission-mode, bypassPermissions]
+    args: [--verbose]
 """,
     )
     cfg = load(path, cwd=tmp_path)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     r = resolve("claude", cfg, CliOverrides(passthrough=["--model", "sonnet"]), cwd=tmp_path)
-    # Config args come first, CLI passthrough last so CLI wins on conflict.
+    # Profile default args first, then config args, then CLI passthrough
+    # (so CLI wins on conflict).
     assert r.passthrough_args == [
         "--permission-mode",
         "bypassPermissions",
+        "--verbose",
         "--model",
         "sonnet",
     ]
+
+
+def test_profile_default_args_applied_without_config(tmp_path: Path, monkeypatch):
+    from contained.config import ConfigSection, LoadedConfig
+    from contained.run import CliOverrides, resolve
+    cfg = LoadedConfig(
+        path=None,
+        base_dir=tmp_path,
+        default_agent=None,
+        defaults=ConfigSection(),
+        agents={},
+    )
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    r = resolve("claude", cfg, CliOverrides(), cwd=tmp_path)
+    assert r.passthrough_args == ["--permission-mode", "bypassPermissions"]
 
 
 def test_unknown_top_level_key_fails(tmp_path: Path):

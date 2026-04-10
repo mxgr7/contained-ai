@@ -7,12 +7,6 @@ default_agent: claude
 
 agents:
   claude:
-    # The container is already a sandbox (no host filesystem access,
-    # egress allowlist, non-root, cap-drop all) so claude's per-call
-    # permission gating is friction without benefit here.
-    args:
-      - --permission-mode
-      - bypassPermissions
     mounts_ro:
       # Let the agent run `gh` against github without granting write
       # access to the host config. Safe to drop if you don't use gh.
