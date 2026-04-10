@@ -52,9 +52,33 @@ Requires Python 3.10+ and Docker. On macOS that means Docker Desktop;
 on Linux, `docker-ce` (rootless works). See `contained doctor` for an
 environment check.
 
+The recommended path is [pipx](https://pipx.pypa.io/), which manages
+an isolated virtualenv for you and puts `contained` on your `PATH`
+globally:
+
 ```sh
-pip install -e '.[dev]'
+brew install pipx          # or: python3 -m pip install --user pipx
+pipx ensurepath            # reopen your shell after this
+pipx install -e .
 ```
+
+If you just want a plain virtualenv instead:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+With a venv, `contained` is only on `PATH` while the venv is active.
+
+For running the test suite, install the dev extras into whichever
+environment you're using — `pipx inject contained-ai pytest ruff
+mypy`, or `pip install -e '.[dev]'` inside the venv.
+
+> **Note:** Homebrew's Python is PEP 668–locked, so a bare
+> `pip install -e .` will be refused with "externally-managed-
+> environment." Use pipx or a venv.
 
 Then build the two bundled images locally (shared base + egress
 proxy):
@@ -370,8 +394,10 @@ it. Third-party profiles are an explicit post-MVP goal.
 ## Development
 
 ```sh
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e '.[dev]'
-.venv/bin/pytest            # 87 tests, ~2.5s
+pytest                      # 87 tests, ~2.5s
 ```
 
 Project layout:
