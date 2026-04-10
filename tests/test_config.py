@@ -49,6 +49,46 @@ agents:
     assert not cfg.agents["claude"].mounts_ro[0].startswith("~")
 
 
+def test_args_passthrough(tmp_path: Path):
+    path = write(
+        tmp_path,
+        "contained.yaml",
+        """
+agents:
+  claude:
+    args:
+      - --permission-mode
+      - bypassPermissions
+""",
+    )
+    cfg = load(path, cwd=tmp_path)
+    assert cfg.agents["claude"].args == ["--permission-mode", "bypassPermissions"]
+
+
+def test_args_agent_appended_to_cli_passthrough(tmp_path: Path, monkeypatch):
+    from contained.config import LoadedConfig
+    from contained.run import CliOverrides, resolve
+    path = write(
+        tmp_path,
+        "contained.yaml",
+        """
+agents:
+  claude:
+    args: [--permission-mode, bypassPermissions]
+""",
+    )
+    cfg = load(path, cwd=tmp_path)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    r = resolve("claude", cfg, CliOverrides(passthrough=["--model", "sonnet"]), cwd=tmp_path)
+    # Config args come first, CLI passthrough last so CLI wins on conflict.
+    assert r.passthrough_args == [
+        "--permission-mode",
+        "bypassPermissions",
+        "--model",
+        "sonnet",
+    ]
+
+
 def test_unknown_top_level_key_fails(tmp_path: Path):
     path = write(tmp_path, "contained.yaml", "bogus_key: 1\n")
     with pytest.raises(ConfigError, match="unknown top-level"):

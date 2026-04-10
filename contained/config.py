@@ -18,7 +18,7 @@ import yaml
 CONFIG_FILENAME = "contained.yaml"
 
 _TOP_LEVEL_KEYS = {"default_agent", "agents", "defaults"}
-_SECTION_KEYS = {"image", "env", "mounts", "mounts_ro", "allowlist", "network"}
+_SECTION_KEYS = {"image", "env", "mounts", "mounts_ro", "allowlist", "network", "args"}
 
 
 class ConfigError(ValueError):
@@ -35,6 +35,7 @@ class ConfigSection:
     mounts_ro: list[str] = field(default_factory=list)
     allowlist: list[str] = field(default_factory=list)
     network: str | None = None
+    args: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -142,6 +143,7 @@ def _parse_section(block: Any, path: Path, where: str) -> ConfigSection:
             block.get("allowlist"), path, f"{where}.allowlist", expand=True
         ),
         network=network,
+        args=_str_list(block.get("args"), path, f"{where}.args", expand=False),
     )
 
 

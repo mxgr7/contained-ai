@@ -100,6 +100,7 @@ def resolve(
     allow: list[str] = list(profiles.TOOL_DEFAULT_ALLOWLIST)
     mounts_rw: list[str] = []
     mounts_ro: list[str] = []
+    args: list[str] = []
     network = "allowlist"
     image = profile.image
 
@@ -118,6 +119,7 @@ def resolve(
     allow = _union(allow, d.allowlist)
     mounts_rw = _union(mounts_rw, d.mounts)
     mounts_ro = _union(mounts_ro, d.mounts_ro)
+    args = args + list(d.args)
     if d.network is not None:
         network = d.network
     if d.image is not None:
@@ -129,6 +131,7 @@ def resolve(
     allow = _union(allow, a.allowlist)
     mounts_rw = _union(mounts_rw, a.mounts)
     mounts_ro = _union(mounts_ro, a.mounts_ro)
+    args = args + list(a.args)
     if a.network is not None:
         network = a.network
     if a.image is not None:
@@ -196,7 +199,7 @@ def resolve(
         network=network,
         allowlist=allow,
         workdir=profile.workdir,
-        passthrough_args=list(overrides.passthrough),
+        passthrough_args=args + list(overrides.passthrough),
         config_path=loaded.path,
         rebuild=overrides.rebuild,
         no_state=overrides.no_state,
