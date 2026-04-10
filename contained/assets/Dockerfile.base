@@ -41,10 +41,8 @@ WORKDIR /workspace
 # Claude Code — published npm package.
 RUN npm install -g @anthropic-ai/claude-code
 
-# pi coding-agent — upstream install path is TBD (see PRD 05). Until
-# the user or a follow-up commit wires it up, `contained run pi` will
-# fail inside the container with "pi: not found". Replace this line
-# with the real install when ready.
-# RUN npm install -g <pi package or git ref>
+# pi coding-agent — Mario Zechner's terminal coding harness.
+# Upstream: https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent
+RUN npm install -g @mariozechner/pi-coding-agent
 
 CMD ["bash"]

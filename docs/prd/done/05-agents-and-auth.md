@@ -172,9 +172,12 @@ there next time.
 ## Acceptance criteria (MVP)
 
 - [x] `claude` profile registered and runnable.
-- [ ] `pi` profile registered and runnable. *(Registered in
-      `contained/profiles.py`; installing `pi` in `Dockerfile.base` is
-      still a TODO — upstream install path TBD.)*
+- [x] `pi` profile registered and runnable. *(Registered in
+      `contained/profiles.py`; `@mariozechner/pi-coding-agent`
+      installed globally in `Dockerfile.base`. First-time auth is via
+      `pi /login` inside the container or by exporting an API key env
+      var; either way the result persists in the per-project state
+      mount at `/home/agent/.pi`.)*
 - [x] Each profile only forwards its own env vars, not the other's
       credentials. *(Enforced by per-profile `env` lists.)*
 - [x] Host credential file is mounted (read-only where possible) and
@@ -196,11 +199,12 @@ there next time.
 
 ## Deferred
 
-- **pi install in `Dockerfile.base`.** The upstream install mechanism
-  for `pi-mono/packages/coding-agent` needs to be confirmed. Until
-  then, `contained run pi` will start the container but `pi` itself
-  will not be found. Tracked as a follow-up before MVP ships.
 - **Additional Claude auth endpoints in the allowlist.** Only
   `api.anthropic.com:443` is enumerated today; any telemetry or OAuth
   endpoints Claude Code hits will be added once PRD 04's proxy is in
   place and we can observe denied hosts.
+- **pi credential seeding.** pi's config dir `~/.pi/` holds models
+  config, keybindings, and OAuth tokens from `/login`. MVP leaves the
+  seed list empty and relies on the per-project state mount to
+  persist whatever pi writes after first run. Revisit if users
+  routinely expect their host pi session to carry over.
