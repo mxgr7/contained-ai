@@ -339,7 +339,7 @@ def test_run_starts_and_stops_proxy_in_allowlist(tmp_path: Path, monkeypatch):
     started: list[tuple] = []
     stopped: list[proxy.ProxySession] = []
 
-    def fake_start(run_id, allowlist, image, *, state_dir=None):
+    def fake_start(run_id, allowlist, image, *, state_dir=None, project=None):
         s = proxy.ProxySession(
             run_id, f"contained-net-{run_id}", f"contained-proxy-{run_id}",
             tmp_path / "filter.txt",

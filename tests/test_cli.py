@@ -235,6 +235,145 @@ def test_no_state_flag_reaches_runtime(tmp_path: Path, monkeypatch, capsys):
     assert seen == {"no_state": True, "has_claude_mount": False}
 
 
+def _fake_run_info(tmp_path: Path, run_id: str, project: str | None = None):
+    from contained import proxy
+    fp = proxy.write_filter_file(
+        ["api.anthropic.com:443"], state_dir=tmp_path,
+    )
+    return proxy.RunInfo(
+        run_id=run_id,
+        container=f"contained-proxy-{run_id}",
+        project=project,
+        filter_path=fp,
+    )
+
+
+def test_allow_requires_hosts_or_list(capsys, monkeypatch):
+    from contained import proxy
+    monkeypatch.setattr(proxy, "discover_runs", lambda: [])
+    rc = cli.main(["allow"])
+    assert rc == 2
+    assert "specify one or more hosts" in capsys.readouterr().err
+
+
+def test_allow_list_and_hosts_mutually_exclusive(capsys, monkeypatch):
+    from contained import proxy
+    monkeypatch.setattr(proxy, "discover_runs", lambda: [])
+    rc = cli.main(["allow", "--list", "example.com:443"])
+    assert rc == 2
+    assert "mutually exclusive" in capsys.readouterr().err
+
+
+def test_allow_errors_when_no_runs(capsys, monkeypatch):
+    from contained import proxy
+    monkeypatch.setattr(proxy, "discover_runs", lambda: [])
+    rc = cli.main(["allow", "example.com:443"])
+    assert rc == 1
+    assert "no running contained sessions" in capsys.readouterr().err
+
+
+def test_allow_adds_host_to_unique_run(tmp_path, capsys, monkeypatch):
+    from contained import proxy
+    info = _fake_run_info(tmp_path, "abc1234")
+    try:
+        monkeypatch.setattr(proxy, "discover_runs", lambda: [info])
+        reloaded: list[str] = []
+        monkeypatch.setattr(proxy, "reload", lambda c: reloaded.append(c))
+        # Prevent the post-add probe from touching the network.
+        import socket
+        def fake_connect(addr, timeout=None):
+            raise OSError("blocked in test")
+        monkeypatch.setattr(socket, "create_connection", fake_connect)
+
+        rc = cli.main(["allow", "example.com:443"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "added example.com to run abc1234" in out
+        assert "1 → 2 entries" in out
+        assert reloaded == ["contained-proxy-abc1234"]
+        assert "example.com" in proxy.read_filter_hosts(info.filter_path)
+    finally:
+        info.filter_path.unlink(missing_ok=True)
+
+
+def test_allow_disambiguates_multiple_runs(tmp_path, capsys, monkeypatch):
+    from contained import proxy
+    a = _fake_run_info(tmp_path, "aaa", project="/home/me/a")
+    b = _fake_run_info(tmp_path, "bbb", project="/home/me/b")
+    try:
+        monkeypatch.setattr(proxy, "discover_runs", lambda: [a, b])
+        rc = cli.main(["allow", "example.com:443"])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "2 running sessions" in err
+        assert "aaa" in err and "bbb" in err
+    finally:
+        a.filter_path.unlink(missing_ok=True)
+        b.filter_path.unlink(missing_ok=True)
+
+
+def test_allow_targets_specific_run(tmp_path, capsys, monkeypatch):
+    from contained import proxy
+    a = _fake_run_info(tmp_path, "aaa")
+    b = _fake_run_info(tmp_path, "bbb")
+    try:
+        monkeypatch.setattr(proxy, "discover_runs", lambda: [a, b])
+        monkeypatch.setattr(proxy, "reload", lambda c: None)
+        import socket
+        monkeypatch.setattr(
+            socket, "create_connection",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("blocked")),
+        )
+        rc = cli.main(["allow", "--run", "bbb", "example.com:443"])
+        assert rc == 0
+        assert "example.com" in proxy.read_filter_hosts(b.filter_path)
+        assert "example.com" not in proxy.read_filter_hosts(a.filter_path)
+    finally:
+        a.filter_path.unlink(missing_ok=True)
+        b.filter_path.unlink(missing_ok=True)
+
+
+def test_allow_list_prints_current_allowlist(tmp_path, capsys, monkeypatch):
+    from contained import proxy
+    info = _fake_run_info(tmp_path, "ccc")
+    try:
+        monkeypatch.setattr(proxy, "discover_runs", lambda: [info])
+        rc = cli.main(["allow", "--list"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "run ccc" in out
+        assert "api.anthropic.com" in out
+    finally:
+        info.filter_path.unlink(missing_ok=True)
+
+
+def test_allow_rejects_invalid_host(tmp_path, capsys, monkeypatch):
+    from contained import proxy
+    info = _fake_run_info(tmp_path, "ddd")
+    try:
+        monkeypatch.setattr(proxy, "discover_runs", lambda: [info])
+        rc = cli.main(["allow", "not a host"])
+        assert rc == 2
+        assert "invalid hostname" in capsys.readouterr().err
+    finally:
+        info.filter_path.unlink(missing_ok=True)
+
+
+def test_allow_idempotent(tmp_path, capsys, monkeypatch):
+    from contained import proxy
+    info = _fake_run_info(tmp_path, "eee")
+    try:
+        monkeypatch.setattr(proxy, "discover_runs", lambda: [info])
+        reloaded: list[str] = []
+        monkeypatch.setattr(proxy, "reload", lambda c: reloaded.append(c))
+        rc = cli.main(["allow", "api.anthropic.com:443"])
+        assert rc == 0
+        assert reloaded == []  # no reload when nothing changed
+        assert "no new hosts" in capsys.readouterr().out
+    finally:
+        info.filter_path.unlink(missing_ok=True)
+
+
 def test_doctor_runs_even_without_docker(capsys, monkeypatch):
     # Don't hit the live network during tests.
     import socket

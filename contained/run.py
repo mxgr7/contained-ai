@@ -158,7 +158,7 @@ def resolve(
         image = overrides.image
 
     for entry in allow:
-        _validate_allowlist_entry(entry)
+        validate_allowlist_entry(entry)
 
     parsed_rw = [_parse_mount(m, loaded.base_dir, read_only=False) for m in mounts_rw]
     parsed_ro = [_parse_mount(m, loaded.base_dir, read_only=True) for m in mounts_ro]
@@ -252,7 +252,7 @@ _ALLOWLIST_HOST_RE = re.compile(
 )
 
 
-def _validate_allowlist_entry(entry: str) -> None:
+def validate_allowlist_entry(entry: str) -> None:
     stripped = entry.strip()
     if not stripped:
         raise ConfigError("allowlist entries must not be empty")

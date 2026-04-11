@@ -162,6 +162,150 @@ def test_proxy_allowlist_end_to_end():
         proxy.stop(session)
 
 
+def test_start_sets_run_id_and_filter_path_labels(monkeypatch, tmp_path):
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(proxy.subprocess, "run", fake_run)
+    session = proxy.start(
+        "xyz999", ["example.com:443"], "proxy:tag",
+        state_dir=tmp_path, project=Path("/fake/project"),
+    )
+    try:
+        run_cmd = calls[1]
+        assert run_cmd[:2] == ["docker", "run"]
+        labels = [
+            run_cmd[i + 1] for i, tok in enumerate(run_cmd) if tok == "--label"
+        ]
+        assert f"{proxy.LABEL_RUN_ID}=xyz999" in labels
+        assert f"{proxy.LABEL_PROJECT}=/fake/project" in labels
+        assert any(
+            lbl.startswith(f"{proxy.LABEL_FILTER_PATH}=") for lbl in labels
+        )
+    finally:
+        session.filter_path.unlink(missing_ok=True)
+
+
+def test_read_filter_hosts_roundtrip(tmp_path: Path):
+    fp = proxy.write_filter_file(
+        ["api.anthropic.com:443", "github.com:443", "a-b.example.com"],
+        state_dir=tmp_path,
+    )
+    try:
+        hosts = proxy.read_filter_hosts(fp)
+        assert hosts == ["api.anthropic.com", "github.com", "a-b.example.com"]
+    finally:
+        fp.unlink(missing_ok=True)
+
+
+def test_append_to_filter_adds_new_hosts(tmp_path: Path):
+    fp = proxy.write_filter_file(
+        ["api.anthropic.com:443", "github.com:443"], state_dir=tmp_path,
+    )
+    try:
+        all_hosts, added = proxy.append_to_filter(
+            fp, ["example.com:443", "pypi.org:443"]
+        )
+        assert added == ["example.com", "pypi.org"]
+        assert all_hosts == [
+            "api.anthropic.com", "github.com", "example.com", "pypi.org",
+        ]
+        # And the file actually contains the new entries.
+        assert proxy.read_filter_hosts(fp) == all_hosts
+    finally:
+        fp.unlink(missing_ok=True)
+
+
+def test_append_to_filter_idempotent(tmp_path: Path):
+    fp = proxy.write_filter_file(["api.anthropic.com:443"], state_dir=tmp_path)
+    try:
+        all_hosts, added = proxy.append_to_filter(
+            fp, ["api.anthropic.com", "api.anthropic.com:8443"]
+        )
+        assert added == []
+        assert all_hosts == ["api.anthropic.com"]
+    finally:
+        fp.unlink(missing_ok=True)
+
+
+def test_append_to_filter_preserves_unknown_lines(tmp_path: Path):
+    fp = tmp_path / "filter.txt"
+    fp.write_text(
+        "# hand-edited comment\n"
+        "^api\\.anthropic\\.com(:[0-9]+)?$\n"
+    )
+    all_hosts, added = proxy.append_to_filter(fp, ["example.com:443"])
+    assert added == ["example.com"]
+    contents = fp.read_text()
+    assert "# hand-edited comment" in contents
+    assert r"^example\.com(:[0-9]+)?$" in contents
+
+
+def test_append_to_filter_preserves_inode(tmp_path):
+    """The proxy bind-mounts the filter file by inode — the rewrite
+    must NOT replace the file or the container will keep reading the
+    old content."""
+    fp = proxy.write_filter_file(["api.anthropic.com:443"], state_dir=tmp_path)
+    try:
+        inode_before = fp.stat().st_ino
+        proxy.append_to_filter(fp, ["example.com:443", "pypi.org:443"])
+        assert fp.stat().st_ino == inode_before
+        # And the new content is actually on disk.
+        assert "example.com" in proxy.read_filter_hosts(fp)
+    finally:
+        fp.unlink(missing_ok=True)
+
+
+def test_reload_restarts_container(monkeypatch):
+    """SIGHUP is insufficient — tinyproxy caches the Filter host list
+    at startup, so the proxy container must be fully restarted."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        proxy.subprocess, "run",
+        lambda cmd, **kw: calls.append(cmd) or MagicMock(returncode=0, stdout="", stderr=""),
+    )
+    proxy.reload("contained-proxy-abc")
+    assert calls == [["docker", "restart", "contained-proxy-abc"]]
+
+
+def test_reload_raises_on_failure(monkeypatch):
+    monkeypatch.setattr(
+        proxy.subprocess, "run",
+        lambda cmd, **kw: MagicMock(returncode=1, stdout="", stderr="no such container"),
+    )
+    with pytest.raises(proxy.ProxyError, match="no such container"):
+        proxy.reload("nope")
+
+
+def test_discover_runs_parses_labels(monkeypatch):
+    stdout = (
+        "contained-proxy-aaa\taaa\t/home/me/proj1\t/var/f/aaa.txt\n"
+        "contained-proxy-bbb\tbbb\t\t/var/f/bbb.txt\n"
+    )
+    monkeypatch.setattr(
+        proxy.subprocess, "run",
+        lambda cmd, **kw: MagicMock(returncode=0, stdout=stdout, stderr=""),
+    )
+    runs = proxy.discover_runs()
+    assert len(runs) == 2
+    assert runs[0].run_id == "aaa"
+    assert runs[0].project == "/home/me/proj1"
+    assert runs[0].filter_path == Path("/var/f/aaa.txt")
+    assert runs[1].project is None
+
+
+def test_discover_runs_raises_on_docker_error(monkeypatch):
+    monkeypatch.setattr(
+        proxy.subprocess, "run",
+        lambda cmd, **kw: MagicMock(returncode=1, stdout="", stderr="daemon down"),
+    )
+    with pytest.raises(proxy.ProxyError, match="daemon down"):
+        proxy.discover_runs()
+
+
 def test_stop_is_best_effort(monkeypatch, tmp_path):
     calls: list[list[str]] = []
     monkeypatch.setattr(

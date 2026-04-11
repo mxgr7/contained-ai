@@ -12,9 +12,15 @@ import os
 import sys
 from pathlib import Path
 
-from . import __version__, doctor, profiles, runtime
+from . import __version__, doctor, profiles, proxy, runtime
 from .config import ConfigError, discover, load
-from .run import CliOverrides, check_required_host_env, render_dry_run, resolve
+from .run import (
+    CliOverrides,
+    check_required_host_env,
+    render_dry_run,
+    resolve,
+    validate_allowlist_entry,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -102,6 +108,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="pass --no-cache to docker build",
     )
 
+    allow_p = sub.add_parser(
+        "allow",
+        help="add hosts to the allowlist of a running session",
+        description="Add hosts to the egress allowlist of a running "
+        "`contained run` session without restarting it.",
+    )
+    allow_p.add_argument(
+        "hosts", nargs="*", metavar="HOST[:PORT]",
+        help="one or more hosts to add (same grammar as `run --allow`)",
+    )
+    allow_p.add_argument(
+        "--run", dest="run_id", metavar="ID",
+        help="target a specific run id (required if multiple sessions are active)",
+    )
+    allow_p.add_argument(
+        "--list", action="store_true",
+        help="print the current allowlist for the targeted run and exit",
+    )
+
     sub.add_parser("doctor", help="diagnose environment readiness")
     sub.add_parser("version", help="print version")
 
@@ -134,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_run(args, passthrough)
     if args.command == "build":
         return _cmd_build(args)
+    if args.command == "allow":
+        return _cmd_allow(args)
 
     parser.error(f"unknown command: {args.command}")
     return 2  # unreachable
@@ -213,6 +240,121 @@ def _cmd_build(args: argparse.Namespace) -> int:
         return 1
     print(f"built {base_tag}")
     print(f"built {proxy_tag}")
+    return 0
+
+
+def _cmd_allow(args: argparse.Namespace) -> int:
+    if args.list and args.hosts:
+        print(
+            "error: --list is mutually exclusive with host arguments",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.list and not args.hosts:
+        print(
+            "error: specify one or more hosts, or pass --list",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Validate host syntax up front so we fail before touching docker.
+    for entry in args.hosts:
+        try:
+            validate_allowlist_entry(entry)
+        except ConfigError as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 2
+
+    try:
+        runs = proxy.discover_runs()
+    except proxy.ProxyError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    if args.run_id:
+        matches = [r for r in runs if r.run_id == args.run_id]
+        if not matches:
+            print(
+                f"error: no running session with run_id={args.run_id}",
+                file=sys.stderr,
+            )
+            return 1
+        target = matches[0]
+    elif not runs:
+        print(
+            "error: no running contained sessions found. "
+            "start one with `contained run <agent>` first.",
+            file=sys.stderr,
+        )
+        return 1
+    elif len(runs) > 1:
+        print(
+            f"error: {len(runs)} running sessions; pass --run <id>:",
+            file=sys.stderr,
+        )
+        for r in runs:
+            print(
+                f"  {r.run_id}  {r.project or '(unknown project)'}",
+                file=sys.stderr,
+            )
+        return 1
+    else:
+        target = runs[0]
+
+    if args.list:
+        try:
+            hosts = proxy.read_filter_hosts(target.filter_path)
+        except OSError as e:
+            print(f"error: cannot read filter file: {e}", file=sys.stderr)
+            return 1
+        print(f"run {target.run_id} — {len(hosts)} entries:")
+        for h in hosts:
+            print(f"  {h}")
+        return 0
+
+    try:
+        all_hosts, added = proxy.append_to_filter(target.filter_path, args.hosts)
+    except (proxy.ProxyError, OSError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    if not added:
+        print(
+            f"contained: no new hosts to add "
+            f"(all {len(all_hosts)} already allowed)"
+        )
+        return 0
+
+    try:
+        proxy.reload(target.container)
+    except proxy.ProxyError as e:
+        print(
+            f"error: rewrote filter file but failed to reload proxy: {e}",
+            file=sys.stderr,
+        )
+        return 1
+
+    before = len(all_hosts) - len(added)
+    print(
+        f"contained: added {', '.join(added)} to run {target.run_id} "
+        f"({before} → {len(all_hosts)} entries)"
+    )
+
+    # Advisory host-side reachability probe. The proxy runs inside docker
+    # so a failed probe here doesn't prove the agent can't reach the
+    # host — it just tells the user their own network path is suspect.
+    import socket
+    for entry in args.hosts:
+        host, _, port_s = entry.partition(":")
+        try:
+            port = int(port_s) if port_s else 443
+        except ValueError:
+            continue
+        try:
+            with socket.create_connection((host, port), timeout=2):
+                print(f"  {entry}: reachable")
+        except OSError as e:
+            print(f"  {entry}: warning: not reachable from host ({e})")
     return 0
 
 

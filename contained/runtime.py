@@ -323,6 +323,7 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
                 resolved.allowlist,
                 profiles.PROXY_IMAGE,
                 state_dir=filter_dir,
+                project=cwd,
             )
         except (proxy.ProxyError, OSError) as e:
             # OSError shows up when docker itself isn't on PATH, which
