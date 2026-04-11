@@ -6,7 +6,6 @@ independent and prints its own status line.
 
 from __future__ import annotations
 
-import os
 import shutil
 import socket
 import subprocess
@@ -14,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import profiles
+from .config import ConfigError, discover, load
 from .state import state_root
 
 
@@ -31,6 +31,7 @@ def run_checks() -> list[Check]:
         _check_state_dir(),
         _check_known_profiles(),
         *_check_allowlist_reachability(),
+        *_check_ssh_allowlist_reachability(),
     ]
 
 
@@ -97,6 +98,37 @@ def _check_allowlist_reachability() -> list[Check]:
                 out.append(Check(f"allowlist {entry}", True, "reachable"))
         except OSError as e:
             out.append(Check(f"allowlist {entry}", False, f"{e}"))
+    return out
+
+
+def _check_ssh_allowlist_reachability() -> list[Check]:
+    """TCP-connect probe each SSH allowlist entry (PRD 09).
+
+    Unlike the HTTPS default list, the SSH allowlist is always
+    project-specific — profiles contribute nothing. Doctor discovers
+    the nearest ``contained.yaml`` and probes whatever ``ssh.allowlist``
+    entries it finds. Silent no-op if no config is discoverable.
+    """
+    try:
+        cfg_path = discover(Path.cwd())
+    except OSError:
+        return []
+    if cfg_path is None:
+        return []
+    try:
+        loaded = load(cfg_path, cwd=Path.cwd())
+    except ConfigError:
+        return []
+    out: list[Check] = []
+    for entry in loaded.ssh_allowlist:
+        host = entry.split(":", 1)[0].strip()
+        if not host:
+            continue
+        try:
+            with socket.create_connection((host, 22), timeout=2):
+                out.append(Check(f"ssh allowlist {host}:22", True, "reachable"))
+        except OSError as e:
+            out.append(Check(f"ssh allowlist {host}:22", False, f"{e}"))
     return out
 
 

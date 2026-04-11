@@ -13,9 +13,14 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 COPY tinyproxy.conf /etc/tinyproxy/tinyproxy.conf
-# Filter file is bind-mounted by the runtime. Ship an empty default so
+COPY tinyproxy-ssh.conf /etc/tinyproxy/tinyproxy-ssh.conf
+# Filter files are bind-mounted by the runtime. Ship empty defaults so
 # the image is usable standalone (denies everything by default).
-RUN : > /etc/tinyproxy/filter
+RUN : > /etc/tinyproxy/filter \
+ && : > /etc/tinyproxy/filter-ssh
 
-EXPOSE 8888
+# The HTTPS sidecar is the default CMD. The Git-over-SSH sidecar (PRD 09)
+# runs the same image with a command override pointing at
+# tinyproxy-ssh.conf, so one image serves both roles.
+EXPOSE 8888 8889
 CMD ["tinyproxy", "-d", "-c", "/etc/tinyproxy/tinyproxy.conf"]

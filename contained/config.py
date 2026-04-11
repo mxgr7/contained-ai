@@ -17,8 +17,9 @@ import yaml
 
 CONFIG_FILENAME = "contained.yaml"
 
-_TOP_LEVEL_KEYS = {"default_agent", "agents", "defaults"}
+_TOP_LEVEL_KEYS = {"default_agent", "agents", "defaults", "ssh"}
 _SECTION_KEYS = {"image", "env", "mounts", "mounts_ro", "allowlist", "network", "args"}
+_SSH_KEYS = {"allowlist"}
 
 
 class ConfigError(ValueError):
@@ -45,6 +46,7 @@ class LoadedConfig:
     default_agent: str | None
     defaults: ConfigSection
     agents: dict[str, ConfigSection]
+    ssh_allowlist: list[str] = field(default_factory=list)
 
     @classmethod
     def empty(cls, base_dir: Path) -> LoadedConfig:
@@ -54,6 +56,7 @@ class LoadedConfig:
             default_agent=None,
             defaults=ConfigSection(),
             agents={},
+            ssh_allowlist=[],
         )
 
     def for_agent(self, name: str) -> ConfigSection:
@@ -103,13 +106,27 @@ def load(path: Path | None, *, cwd: Path) -> LoadedConfig:
             raise ConfigError(f"{path}: agent name must be a string, got {name!r}")
         agents[name] = _parse_section(block, path, f"agents.{name}")
 
+    ssh_allowlist = _parse_ssh_block(raw.get("ssh"), path)
+
     return LoadedConfig(
         path=path,
         base_dir=path.parent,
         default_agent=default_agent,
         defaults=defaults,
         agents=agents,
+        ssh_allowlist=ssh_allowlist,
     )
+
+
+def _parse_ssh_block(block: Any, path: Path) -> list[str]:
+    if block is None:
+        return []
+    if not isinstance(block, dict):
+        raise ConfigError(f"{path}: ssh must be a mapping")
+    unknown = set(block) - _SSH_KEYS
+    if unknown:
+        raise ConfigError(f"{path}: unknown keys in ssh: {sorted(unknown)}")
+    return _str_list(block.get("allowlist"), path, "ssh.allowlist", expand=True)
 
 
 def _parse_section(block: Any, path: Path, where: str) -> ConfigSection:

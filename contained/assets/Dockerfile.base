@@ -16,7 +16,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-        ca-certificates curl git gnupg openssh-client \
+        ca-certificates curl git gnupg openssh-client netcat-openbsd \
         build-essential pkg-config \
         python3 python3-pip python3-venv python3-dev pipx \
         tini \
@@ -36,7 +36,8 @@ RUN apt-get update \
 RUN groupadd --gid 1000 agent \
  && useradd  --uid 1000 --gid 1000 --create-home --shell /bin/bash agent \
  && mkdir -p /workspace \
- && chown agent:agent /workspace
+ && chown agent:agent /workspace \
+ && install -d -m 0700 -o agent -g agent /home/agent/.ssh
 
 # Global npm prefix writable by the agent user so `npm i -g` works post-build.
 RUN mkdir -p /home/agent/.npm-global \

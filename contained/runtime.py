@@ -9,6 +9,7 @@ and swallows KeyboardInterrupt.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import hashlib
 import shutil
@@ -20,7 +21,15 @@ from importlib import resources
 from pathlib import Path
 
 from . import profiles, proxy, state
-from .run import ResolvedRun, mask_env_display
+from .run import (
+    SSH_AGENT_SOCK_CONTAINER_PATH,
+    SSH_CONFIG_CONTAINER_PATH,
+    SSH_KEY_CONTAINER_PATH,
+    SSH_KNOWN_HOSTS_CONTAINER_PATH,
+    ResolvedRun,
+    generate_ssh_config,
+    mask_env_display,
+)
 from .state import state_root
 
 
@@ -111,6 +120,8 @@ def build_argv(
     *,
     mask_secrets: bool = False,
     proxy_network: str | None = None,
+    ssh_config_host_path: Path | None = None,
+    ssh_known_hosts_host_path: Path | None = None,
 ) -> list[str]:
     argv = [
         "docker", "run", "--rm", "-it", "--init",
@@ -124,6 +135,35 @@ def build_argv(
         if m.read_only:
             spec += ",ro"
         argv += ["--mount", spec]
+    if run.ssh_allowlist:
+        if ssh_config_host_path is not None:
+            argv += [
+                "--mount",
+                f"type=bind,src={ssh_config_host_path},"
+                f"dst={SSH_CONFIG_CONTAINER_PATH},ro",
+            ]
+        if ssh_known_hosts_host_path is not None:
+            argv += [
+                "--mount",
+                f"type=bind,src={ssh_known_hosts_host_path},"
+                f"dst={SSH_KNOWN_HOSTS_CONTAINER_PATH},ro",
+            ]
+        if run.ssh_key_host_path is not None:
+            argv += [
+                "--mount",
+                f"type=bind,src={run.ssh_key_host_path},"
+                f"dst={SSH_KEY_CONTAINER_PATH},ro",
+            ]
+        if run.ssh_auth_sock_host_path is not None:
+            argv += [
+                "--mount",
+                f"type=bind,src={run.ssh_auth_sock_host_path},"
+                f"dst={SSH_AGENT_SOCK_CONTAINER_PATH}",
+            ]
+            argv += [
+                "--env",
+                f"SSH_AUTH_SOCK={SSH_AGENT_SOCK_CONTAINER_PATH}",
+            ]
     for e in run.env:
         if e.from_host:
             argv += ["--env", e.key]
@@ -308,21 +348,23 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
         resolved = dataclasses.replace(resolved, image=image)
 
     session: proxy.ProxySession | None = None
+    ssh_session: proxy.SshProxySession | None = None
+    ssh_config_path: Path | None = None
+    ssh_known_hosts_path: Path | None = None
+    state_dir: Path | None = None
+    if (resolved.network == "allowlist" or resolved.ssh_allowlist) and not resolved.no_state:
+        state_dir = state.project_state_dir(cwd)
+        state_dir.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):
+            state_dir.chmod(0o700)
+
     if resolved.network == "allowlist":
-        filter_dir: Path | None = None
-        if not resolved.no_state:
-            filter_dir = state.project_state_dir(cwd)
-            filter_dir.mkdir(parents=True, exist_ok=True)
-            try:
-                filter_dir.chmod(0o700)
-            except OSError:
-                pass
         try:
             session = proxy.start(
                 proxy.new_run_id(),
                 resolved.allowlist,
                 profiles.PROXY_IMAGE,
-                state_dir=filter_dir,
+                state_dir=state_dir,
                 project=cwd,
             )
         except (proxy.ProxyError, OSError) as e:
@@ -334,15 +376,120 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
                 "run `contained build` to build the proxy image, "
                 "or pass `--network host` to bypass the allowlist."
             ) from e
+
     try:
+        if resolved.ssh_allowlist:
+            if session is None:
+                # Catches --network host / none combined with --allow-ssh:
+                # the SSH sidecar needs the private internal network the
+                # HTTPS sidecar creates, so we can't layer SSH allowlisting
+                # on top of --network host or --network none.
+                raise DockerError(
+                    "--allow-ssh requires --network=allowlist. it cannot "
+                    "be combined with --network host or --network none."
+                )
+                # unreachable — DockerError raised above
+            ssh_config_path, ssh_known_hosts_path = _prepare_ssh_assets(
+                resolved, state_dir
+            )
+            try:
+                ssh_session = proxy.start_ssh(
+                    session.run_id,
+                    resolved.ssh_allowlist,
+                    profiles.PROXY_IMAGE,
+                    network=session.network,
+                    state_dir=state_dir,
+                    project=cwd,
+                )
+            except (proxy.ProxyError, OSError) as e:
+                raise DockerError(
+                    f"failed to start SSH egress proxy: {e}. "
+                    "run `contained build` to build the proxy image."
+                ) from e
+
         argv = build_argv(
             resolved,
             proxy_network=session.network if session else None,
+            ssh_config_host_path=ssh_config_path,
+            ssh_known_hosts_host_path=ssh_known_hosts_path,
         )
         return _execute(argv)
     finally:
+        # Tear down SSH sidecar first so the HTTPS teardown can safely
+        # remove the shared network.
+        if ssh_session is not None:
+            proxy.stop_ssh(ssh_session)
         if session is not None:
             proxy.stop(session)
+        for artifact in (ssh_config_path, ssh_known_hosts_path):
+            if artifact is not None:
+                with contextlib.suppress(OSError):
+                    artifact.unlink(missing_ok=True)
+
+
+def _prepare_ssh_assets(
+    resolved: ResolvedRun, state_dir: Path | None
+) -> tuple[Path, Path]:
+    """Write the per-run ssh_config and known_hosts files to disk.
+
+    `known_hosts` is populated via host-side ``ssh-keyscan`` so the
+    moment of first-use TOFU happens on the user's network, not inside
+    a restricted container whose DNS is routed through our own sidecar.
+    Per-host scan failures are warnings, not errors — an empty
+    known_hosts against ``StrictHostKeyChecking yes`` will cause the
+    agent's first connect to visibly fail, which is the right outcome.
+    """
+    if state_dir is None:
+        # --no-state: write into a process-local tempdir that's cleaned
+        # up in the outer finally.
+        import tempfile
+        state_dir = Path(tempfile.mkdtemp(prefix="contained-ssh-"))
+
+    ssh_key_cp = SSH_KEY_CONTAINER_PATH if resolved.ssh_key_host_path else None
+    config_text = generate_ssh_config(
+        resolved.ssh_allowlist, ssh_key_container_path=ssh_key_cp
+    )
+    ssh_config_path = state_dir / "ssh_config"
+    ssh_config_path.write_text(config_text)
+    with contextlib.suppress(OSError):
+        ssh_config_path.chmod(0o600)
+
+    known_hosts_text = _run_ssh_keyscan(resolved.ssh_allowlist)
+    ssh_known_hosts_path = state_dir / "ssh_known_hosts"
+    ssh_known_hosts_path.write_text(known_hosts_text)
+    with contextlib.suppress(OSError):
+        ssh_known_hosts_path.chmod(0o644)
+    return ssh_config_path, ssh_known_hosts_path
+
+
+def _run_ssh_keyscan(ssh_allowlist: list[str]) -> str:
+    hosts = sorted({e.split(":", 1)[0].strip() for e in ssh_allowlist if e.strip()})
+    if not hosts or shutil.which("ssh-keyscan") is None:
+        if hosts:
+            print(
+                "contained: ssh-keyscan not found on PATH — known_hosts "
+                "will be empty and agent connects will fail verification.",
+                file=sys.stderr,
+            )
+        return ""
+    try:
+        result = subprocess.run(
+            ["ssh-keyscan", "-T", "5", *hosts],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        print(
+            f"contained: ssh-keyscan failed ({e}); known_hosts will be empty.",
+            file=sys.stderr,
+        )
+        return ""
+    if result.stderr.strip():
+        for line in result.stderr.splitlines():
+            if line.strip() and not line.strip().startswith("#"):
+                print(f"contained: ssh-keyscan: {line}", file=sys.stderr)
+    return result.stdout
 
 
 def _execute(argv: list[str]) -> int:

@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import profiles, state
+from . import profiles, proxy, state
 from .config import ConfigError, LoadedConfig
 from .profiles import AgentProfile
 
@@ -61,6 +61,10 @@ class ResolvedRun:
     no_state: bool = False
     warnings: list[str] = field(default_factory=list)
     planned_seeds: list["state.PlannedSeed"] = field(default_factory=list)
+    # PRD 09 — Git over SSH
+    ssh_allowlist: list[str] = field(default_factory=list)
+    ssh_key_host_path: Path | None = None
+    ssh_auth_sock_host_path: str | None = None
 
 
 @dataclass
@@ -78,6 +82,9 @@ class CliOverrides:
     rebuild: bool = False
     no_state: bool = False
     allow_home_mount: bool = False
+    # PRD 09 — Git over SSH
+    allow_ssh: list[str] = field(default_factory=list)
+    ssh_key: Path | None = None
 
 
 def resolve(
@@ -85,6 +92,7 @@ def resolve(
     loaded: LoadedConfig,
     overrides: CliOverrides,
     cwd: Path,
+    host_env: dict[str, str] | None = None,
 ) -> ResolvedRun:
     """Fold every layer into a single ResolvedRun."""
     if agent_name is None:
@@ -160,6 +168,10 @@ def resolve(
     for entry in allow:
         validate_allowlist_entry(entry)
 
+    ssh_allow: list[str] = _union(list(loaded.ssh_allowlist), overrides.allow_ssh)
+    for entry in ssh_allow:
+        validate_ssh_allowlist_entry(entry)
+
     parsed_rw = [_parse_mount(m, loaded.base_dir, read_only=False) for m in mounts_rw]
     parsed_ro = [_parse_mount(m, loaded.base_dir, read_only=True) for m in mounts_ro]
     has_workspace = any(
@@ -175,6 +187,17 @@ def resolve(
     for m in mounts:
         _validate_mount_safety(m, allow_home=overrides.allow_home_mount)
         _require_host_path_exists(m)
+
+    ssh_key_host_path: Path | None = None
+    ssh_auth_sock_host_path: str | None = None
+    if ssh_allow:
+        _reject_dotssh_mounts(parsed_rw + parsed_ro)
+        if overrides.ssh_key is not None:
+            ssh_key_host_path = _resolve_ssh_key_path(overrides.ssh_key)
+        env_source = host_env if host_env is not None else os.environ
+        sock = env_source.get("SSH_AUTH_SOCK")
+        if sock:
+            ssh_auth_sock_host_path = sock
 
     state_mount: Mount | None = None
     planned_seeds: list[state.PlannedSeed] = []
@@ -201,6 +224,13 @@ def resolve(
     warnings = _collect_warnings(parsed_rw + parsed_ro)
     warnings.extend(_seed_warnings(planned_seeds))
 
+    if ssh_allow and ssh_key_host_path is None and ssh_auth_sock_host_path is None:
+        warnings.append(
+            "warning: --allow-ssh is set but neither SSH_AUTH_SOCK nor --ssh-key "
+            "was provided. the agent will have no credentials to authenticate "
+            "with. start ssh-agent on the host (ssh-add) or pass --ssh-key."
+        )
+
     return ResolvedRun(
         agent=profile,
         image=image,
@@ -215,6 +245,9 @@ def resolve(
         no_state=overrides.no_state,
         warnings=warnings,
         planned_seeds=planned_seeds,
+        ssh_allowlist=ssh_allow,
+        ssh_key_host_path=ssh_key_host_path,
+        ssh_auth_sock_host_path=ssh_auth_sock_host_path,
     )
 
 
@@ -271,6 +304,109 @@ def validate_allowlist_entry(entry: str) -> None:
         raise ConfigError(
             f"allowlist entry {entry!r}: port must be numeric, got {port!r}"
         )
+
+
+def validate_ssh_allowlist_entry(entry: str) -> None:
+    """PRD 09: SSH allowlist entries are bare hostnames, optionally with :22.
+
+    Any other port is a configuration error — the SSH sidecar's
+    ``ConnectPort`` is 22, so nothing else can be tunneled, and silently
+    accepting e.g. `host:2222` would mislead the user into thinking
+    non-standard ports are supported when they aren't.
+    """
+    stripped = entry.strip()
+    if not stripped:
+        raise ConfigError("ssh allowlist entries must not be empty")
+    host, _, port = stripped.partition(":")
+    if "*" in host or "?" in host:
+        raise ConfigError(
+            f"ssh allowlist entry {entry!r}: wildcards are not supported"
+        )
+    if not _ALLOWLIST_HOST_RE.match(host):
+        raise ConfigError(
+            f"ssh allowlist entry {entry!r}: invalid hostname {host!r}"
+        )
+    if port and port != "22":
+        raise ConfigError(
+            f"ssh allowlist entry {entry!r}: Git over SSH only supports "
+            "port 22. Use --allow for other ports."
+        )
+
+
+def _reject_dotssh_mounts(user_mounts: list[Mount]) -> None:
+    """Hard-error if any user-supplied mount would expose raw SSH keys.
+
+    When ``--allow-ssh`` is active, mounting ``~/.ssh`` (or any
+    directory containing it) is refused outright — the supported
+    credential modes are ssh-agent forwarding and ``--ssh-key``. The
+    non-ssh sensitive-dir case stays a warning (see
+    ``_collect_warnings``); this stricter policy fires only when SSH
+    egress is enabled and the blast radius is real.
+    """
+    for m in user_mounts:
+        if not m.host.is_dir():
+            continue
+        if m.host.name == ".ssh" or (m.host / ".ssh").exists():
+            raise ConfigError(
+                f"mount {m.host} conflicts with --allow-ssh: contained "
+                "refuses to mount .ssh directories when SSH egress is "
+                "enabled. Use ssh-agent forwarding (ssh-add on the host, "
+                "then run with SSH_AUTH_SOCK set) or pass --ssh-key <path> "
+                "to forward a single key read-only."
+            )
+
+
+def _resolve_ssh_key_path(raw: Path) -> Path:
+    p = Path(os.path.expanduser(os.path.expandvars(str(raw))))
+    try:
+        resolved = p.resolve(strict=True)
+    except FileNotFoundError as e:
+        raise ConfigError(f"--ssh-key: no such file: {p}") from e
+    except OSError as e:
+        raise ConfigError(f"--ssh-key: {p}: {e}") from e
+    if not resolved.is_file():
+        raise ConfigError(f"--ssh-key: not a regular file: {resolved}")
+    return resolved
+
+
+# Container-side paths for the SSH plumbing. These must line up with
+# the `install -d` for /home/agent/.ssh in Dockerfile.base and with the
+# bind mounts added by runtime.run() when ssh_allowlist is non-empty.
+SSH_CONFIG_CONTAINER_PATH = "/home/agent/.ssh/config"
+SSH_KNOWN_HOSTS_CONTAINER_PATH = "/home/agent/.ssh/known_hosts"
+SSH_KEY_CONTAINER_PATH = "/home/agent/.ssh/id_contained"
+SSH_AGENT_SOCK_CONTAINER_PATH = "/run/ssh-agent.sock"
+
+
+def generate_ssh_config(
+    ssh_allowlist: list[str],
+    *,
+    ssh_key_container_path: str | None = None,
+) -> str:
+    """Build the per-run ~/.ssh/config that routes to the SSH sidecar.
+
+    `Host` is emitted as the exact list of allowlisted hostnames —
+    never a wildcard — so typos cleanly fail host-matching and fall
+    through to ssh's default behavior (which the egress policy then
+    blocks). ``nc -X connect`` speaks HTTP CONNECT to the sidecar,
+    which then enforces its own per-host filter before dialing :22
+    on the real host.
+    """
+    hosts = sorted({entry.split(":", 1)[0].strip() for entry in ssh_allowlist if entry.strip()})
+    if not hosts:
+        return ""
+    lines = [
+        "# Generated by contained (PRD 09). Do not edit — regenerated on each run.",
+        f"Host {' '.join(hosts)}",
+        f"    ProxyCommand /usr/bin/nc -X connect -x "
+        f"{proxy.PROXY_SSH_ALIAS}:{proxy.PROXY_SSH_PORT} %h %p",
+        "    StrictHostKeyChecking yes",
+        f"    UserKnownHostsFile {SSH_KNOWN_HOSTS_CONTAINER_PATH}",
+    ]
+    if ssh_key_container_path:
+        lines.append(f"    IdentityFile {ssh_key_container_path}")
+        lines.append("    IdentitiesOnly yes")
+    return "\n".join(lines) + "\n"
 
 
 def _validate_mount_safety(m: Mount, *, allow_home: bool) -> None:
@@ -448,6 +584,25 @@ def render_dry_run(run: ResolvedRun, host_env: dict[str, str]) -> str:
     for entry in run.allowlist:
         lines.append(f"  - {entry}")
     lines.append("")
+    if run.ssh_allowlist:
+        lines.append(f"ssh_allowlist ({len(run.ssh_allowlist)}):")
+        for entry in run.ssh_allowlist:
+            lines.append(f"  - {entry}")
+        cred: str
+        if run.ssh_auth_sock_host_path:
+            cred = f"ssh-agent socket {run.ssh_auth_sock_host_path}"
+        elif run.ssh_key_host_path:
+            cred = f"key file {run.ssh_key_host_path}"
+        else:
+            cred = "(none — agent will fail to authenticate)"
+        lines.append(f"ssh_credentials: {cred}")
+        lines.append("ssh_config (generated):")
+        ssh_key_cp = SSH_KEY_CONTAINER_PATH if run.ssh_key_host_path else None
+        for ssh_line in generate_ssh_config(
+            run.ssh_allowlist, ssh_key_container_path=ssh_key_cp
+        ).splitlines():
+            lines.append(f"  {ssh_line}")
+        lines.append("")
     if run.planned_seeds:
         lines.append("credentials:")
         for p in run.planned_seeds:

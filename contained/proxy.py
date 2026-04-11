@@ -28,9 +28,16 @@ from pathlib import Path
 PROXY_ALIAS = "proxy"
 PROXY_PORT = 8888
 
+PROXY_SSH_ALIAS = "proxy-ssh"
+PROXY_SSH_PORT = 8889
+
 LABEL_RUN_ID = "contained.run_id"
 LABEL_PROJECT = "contained.project"
 LABEL_FILTER_PATH = "contained.filter_path"
+LABEL_ROLE = "contained.role"
+
+ROLE_HTTP = "http"
+ROLE_SSH = "ssh"
 
 # Matches a filter line produced by `write_filter_file`:
 #   ^<escaped-host>(:[0-9]+)?$
@@ -51,6 +58,23 @@ class ProxySession:
     @property
     def proxy_url(self) -> str:
         return f"http://{PROXY_ALIAS}:{PROXY_PORT}"
+
+
+@dataclass
+class SshProxySession:
+    """Sidecar for Git over SSH (PRD 09).
+
+    A second tinyproxy running the same image with a different config
+    file, bound to an already-existing contained-net-<run_id> network
+    under the `proxy-ssh` DNS alias. Port-aware allowlisting falls out
+    for free: this instance's ``ConnectPort`` is 22 and its filter file
+    only lists the SSH-allowed hosts, so there is no cross-contamination
+    with the HTTPS allowlist.
+    """
+
+    run_id: str
+    container: str
+    filter_path: Path
 
 
 @dataclass
@@ -118,6 +142,7 @@ def start(
             "docker", "run", "-d", "--rm",
             "--name", container,
             "--label", f"{LABEL_RUN_ID}={run_id}",
+            "--label", f"{LABEL_ROLE}={ROLE_HTTP}",
             "--label", f"{LABEL_FILTER_PATH}={filter_path}",
         ]
         if project is not None:
@@ -139,6 +164,57 @@ def start(
     return ProxySession(run_id, network, container, filter_path)
 
 
+def start_ssh(
+    run_id: str,
+    ssh_allowlist: list[str],
+    proxy_image: str,
+    *,
+    network: str,
+    state_dir: Path | None = None,
+    project: Path | None = None,
+) -> SshProxySession:
+    """Start the Git-over-SSH sidecar on an already-existing network.
+
+    Unlike :func:`start`, this does not create the docker network: it
+    joins the HTTPS sidecar's network so both proxies share the same
+    internal bridge and the agent container needs only one attachment.
+    The container runs the same tinyproxy image with a second config
+    file (``tinyproxy-ssh.conf`` baked into the proxy image) that sets
+    ``Port 8889`` and ``ConnectPort 22``, and its filter file lives at a
+    distinct path inside the container so it doesn't collide with the
+    HTTPS filter mount.
+    """
+    container = f"contained-proxy-ssh-{run_id}"
+    filter_path: Path | None = None
+    try:
+        filter_path = write_filter_file(ssh_allowlist, state_dir=state_dir)
+        run_cmd = [
+            "docker", "run", "-d", "--rm",
+            "--name", container,
+            "--label", f"{LABEL_RUN_ID}={run_id}",
+            "--label", f"{LABEL_ROLE}={ROLE_SSH}",
+            "--label", f"{LABEL_FILTER_PATH}={filter_path}",
+        ]
+        if project is not None:
+            run_cmd += ["--label", f"{LABEL_PROJECT}={project}"]
+        run_cmd += [
+            "--mount",
+            f"type=bind,src={filter_path},dst=/etc/tinyproxy/filter-ssh,ro",
+            proxy_image,
+            "tinyproxy", "-d", "-c", "/etc/tinyproxy/tinyproxy-ssh.conf",
+        ]
+        _run(run_cmd)
+        _run([
+            "docker", "network", "connect",
+            "--alias", PROXY_SSH_ALIAS,
+            network, container,
+        ])
+    except Exception:
+        stop_ssh(SshProxySession(run_id, container, filter_path or Path("/dev/null")))
+        raise
+    return SshProxySession(run_id, container, filter_path)
+
+
 def stop(session: ProxySession) -> None:
     """Best-effort teardown. Never raises — used from finally blocks."""
     subprocess.run(
@@ -147,6 +223,23 @@ def stop(session: ProxySession) -> None:
     )
     subprocess.run(
         ["docker", "network", "rm", session.network],
+        capture_output=True,
+    )
+    try:
+        session.filter_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def stop_ssh(session: SshProxySession) -> None:
+    """Best-effort teardown of the SSH sidecar.
+
+    Only the container and its filter file are removed — the internal
+    network is owned by the HTTPS :class:`ProxySession` and is torn
+    down there. Safe to call before the HTTPS proxy's ``stop``.
+    """
+    subprocess.run(
+        ["docker", "rm", "-f", session.container],
         capture_output=True,
     )
     try:
@@ -297,7 +390,8 @@ def discover_runs() -> list[RunInfo]:
         '{{.Names}}\t'
         f'{{{{.Label "{LABEL_RUN_ID}"}}}}\t'
         f'{{{{.Label "{LABEL_PROJECT}"}}}}\t'
-        f'{{{{.Label "{LABEL_FILTER_PATH}"}}}}'
+        f'{{{{.Label "{LABEL_FILTER_PATH}"}}}}\t'
+        f'{{{{.Label "{LABEL_ROLE}"}}}}'
     )
     try:
         result = subprocess.run(
@@ -320,7 +414,14 @@ def discover_runs() -> list[RunInfo]:
         if len(parts) < 4:
             continue
         container, run_id, project, filter_path = parts[:4]
+        role = parts[4] if len(parts) >= 5 else ""
         if not run_id or not filter_path:
+            continue
+        # `contained allow` targets the HTTPS filter; skip SSH sidecars
+        # so they never show up as disambiguation candidates. Legacy
+        # containers (pre-PRD-09) have no role label — treat them as
+        # HTTP for backwards compatibility.
+        if role and role != ROLE_HTTP:
             continue
         runs.append(
             RunInfo(

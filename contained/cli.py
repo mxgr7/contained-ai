@@ -81,6 +81,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="permit mounting the user's home directory as a mount source",
     )
     run_p.add_argument(
+        "--allow-ssh", action="append", default=[], metavar="HOST",
+        help="allow Git over SSH to HOST (port 22 only; repeatable)",
+    )
+    run_p.add_argument(
+        "--ssh-key", type=Path, metavar="PATH",
+        help="forward a single SSH private key read-only (alternative to "
+        "ssh-agent forwarding)",
+    )
+    run_p.add_argument(
         "--dry-run", action="store_true",
         help="print resolved config without running anything",
     )
@@ -190,8 +199,10 @@ def _cmd_run(args: argparse.Namespace, passthrough: list[str]) -> int:
             rebuild=args.rebuild,
             no_state=args.no_state,
             allow_home_mount=args.allow_home_mount,
+            allow_ssh=args.allow_ssh,
+            ssh_key=args.ssh_key,
         )
-        resolved = resolve(args.agent, loaded, overrides, cwd=cwd)
+        resolved = resolve(args.agent, loaded, overrides, cwd=cwd, host_env=dict(os.environ))
     except ConfigError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
