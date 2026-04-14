@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import hashlib
+import os
 import shutil
 import subprocess
 import sys
@@ -337,6 +338,26 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
                 file=sys.stderr,
             )
 
+    # After seeds are on disk, stamp the Shift-Enter flag into
+    # claude.json so the container-side Claude Code will actually
+    # interpret the extended-key sequence the outer tty is now
+    # emitting (see _execute). Only meaningful for the claude agent;
+    # the file lives at <project_state>/claude.json which is bind-
+    # mounted to /home/agent/.claude.json.
+    if (
+        not resolved.no_state
+        and resolved.agent.name == "claude"
+        and any(
+            p.seed.state_rel == "claude.json" for p in resolved.planned_seeds
+        )
+    ):
+        claude_json = state.project_state_dir(cwd) / "claude.json"
+        if state.patch_claude_json_shift_enter(claude_json):
+            print(
+                f"contained: set shiftEnterKeyBindingInstalled=true in {claude_json}",
+                file=sys.stderr,
+            )
+
     overlay = find_overlay(resolved, cwd)
     if overlay is not None:
         image = build_overlay(
@@ -492,15 +513,73 @@ def _run_ssh_keyscan(ssh_allowlist: list[str]) -> str:
     return result.stdout
 
 
+# xterm "modifyOtherKeys" mode 2. Without this, Shift-Enter (and
+# Alt-Enter, Ctrl-Enter, etc.) collapse to plain Enter before they
+# ever reach the container — the host terminal never distinguishes
+# them. Mode 2 makes terminals emit CSI 27 ; <mod> ; <key> ~ for
+# modified keys that would otherwise be indistinguishable, which is
+# what Claude Code reads to drive shift-enter-inserts-newline.
+# Supported by iTerm2, Terminal.app, VSCode, xterm, kitty, ghostty,
+# wezterm, foot, konsole. Reset to mode 0 on exit.
+_ENABLE_EXTENDED_KEYS = "\x1b[>4;2m"
+_RESET_EXTENDED_KEYS = "\x1b[>4m"
+
+
+def _write_tty_sequence(seq: str) -> None:
+    if not sys.stdout.isatty():
+        return
+    try:
+        sys.stdout.write(seq)
+        sys.stdout.flush()
+    except OSError:
+        pass
+
+
+def _in_tmux() -> bool:
+    return bool(os.environ.get("TMUX"))
+
+
+def _configure_tmux_extended_keys() -> None:
+    """Make the running tmux server deliver modified keys to panes.
+
+    tmux filters Shift-Enter/Alt-Enter/etc. down to plain Enter unless
+    ``extended-keys`` is on AND the outer terminal is tagged as
+    supporting ``extkeys`` in ``terminal-features``. Emitting the
+    modifyOtherKeys escape sequence from inside a pane is not enough
+    on its own — tmux has to be told, at the server level, to pass
+    those keys through. Both options persist only for the lifetime of
+    the tmux server, and re-applying them is idempotent, so it is
+    safe to run on every ``contained run`` without a restore step.
+    Any failure (old tmux, tmux not on PATH) is ignored — the worst
+    case is that Shift-Enter keeps behaving the way it already does.
+    """
+    if shutil.which("tmux") is None:
+        return
+    for args in (
+        ["tmux", "set", "-g", "extended-keys", "on"],
+        ["tmux", "set", "-ga", "terminal-features", "xterm*:extkeys"],
+    ):
+        try:
+            subprocess.run(args, capture_output=True, timeout=5, check=False)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+
 def _execute(argv: list[str]) -> int:
     """Run docker with stdio inherited; let signals flow to the child."""
-    proc = subprocess.Popen(argv)
+    if _in_tmux():
+        _configure_tmux_extended_keys()
+    _write_tty_sequence(_ENABLE_EXTENDED_KEYS)
     try:
-        return proc.wait()
-    except KeyboardInterrupt:
-        # Docker already received SIGINT via the shared process group;
-        # wait for it to clean up rather than racing it to exit.
-        return proc.wait()
+        proc = subprocess.Popen(argv)
+        try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            # Docker already received SIGINT via the shared process group;
+            # wait for it to clean up rather than racing it to exit.
+            return proc.wait()
+    finally:
+        _write_tty_sequence(_RESET_EXTENDED_KEYS)
 
 
 def overlay_cache_dir() -> Path:

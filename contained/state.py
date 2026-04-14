@@ -7,6 +7,7 @@ Layout:
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -145,6 +146,46 @@ def apply_seeds(plans: list[PlannedSeed]) -> list[PlannedSeed]:
             pass
         written.append(p)
     return written
+
+
+def patch_claude_json_shift_enter(path: Path) -> bool:
+    """Ensure claude.json at ``path`` has ``shiftEnterKeyBindingInstalled: true``.
+
+    Claude Code's /terminal-setup is the normal way this flag gets
+    written, but inside a sandboxed container that command can't reach
+    the host terminal's settings file, and without the flag Claude
+    Code ignores the Shift-Enter escape even when the terminal does
+    send one. contained enables xterm modifyOtherKeys mode 2 on the
+    outer tty (see runtime._execute); this function makes the
+    container-side Claude Code actually act on the resulting sequence.
+
+    Applied on every run so a host-seeded claude.json that predates
+    /terminal-setup still gets upgraded. Returns True if the file was
+    modified. Leaves an unparseable or non-object file alone.
+    """
+    try:
+        raw = path.read_bytes() if path.exists() else b"{}"
+    except OSError:
+        return False
+    try:
+        data = json.loads(raw or b"{}")
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(data, dict):
+        return False
+    if data.get("shiftEnterKeyBindingInstalled") is True:
+        return False
+    data["shiftEnterKeyBindingInstalled"] = True
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2) + "\n")
+    except OSError:
+        return False
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return True
 
 
 def _path_under(container_path: str, state_mount: str | None) -> bool:

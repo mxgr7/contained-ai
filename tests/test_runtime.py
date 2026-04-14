@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -242,6 +243,101 @@ def test_build_overlay_rejects_bad_from(tmp_path: Path, monkeypatch):
         runtime.build_overlay("claude", df, "base:1", rebuild=False)
 
 
+def test_execute_emits_extended_keys_sequence_when_tty(monkeypatch, capsys):
+    class FakeProc:
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.delenv("TMUX", raising=False)
+
+    rc = runtime._execute(["docker", "run", "hi"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert runtime._ENABLE_EXTENDED_KEYS in out
+    assert runtime._RESET_EXTENDED_KEYS in out
+    assert out.index(runtime._ENABLE_EXTENDED_KEYS) < out.index(runtime._RESET_EXTENDED_KEYS)
+
+
+def test_execute_skips_tty_sequence_when_not_a_tty(monkeypatch, capsys):
+    class FakeProc:
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False, raising=False)
+    monkeypatch.delenv("TMUX", raising=False)
+
+    runtime._execute(["docker", "run", "hi"])
+    out = capsys.readouterr().out
+    assert runtime._ENABLE_EXTENDED_KEYS not in out
+    assert runtime._RESET_EXTENDED_KEYS not in out
+
+
+def test_execute_configures_tmux_when_in_tmux(monkeypatch, capsys):
+    class FakeProc:
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: "/usr/bin/tmux" if name == "tmux" else None)
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,123,0")
+
+    calls: list[list[str]] = []
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+    monkeypatch.setattr(runtime.subprocess, "run", fake_run)
+
+    runtime._execute(["docker", "run", "hi"])
+
+    assert ["tmux", "set", "-g", "extended-keys", "on"] in calls
+    assert ["tmux", "set", "-ga", "terminal-features", "xterm*:extkeys"] in calls
+
+
+def test_execute_skips_tmux_config_outside_tmux(monkeypatch):
+    class FakeProc:
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.delenv("TMUX", raising=False)
+
+    calls: list[list[str]] = []
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+    monkeypatch.setattr(runtime.subprocess, "run", fake_run)
+
+    runtime._execute(["docker", "run", "hi"])
+
+    assert not any(cmd and cmd[0] == "tmux" for cmd in calls)
+
+
+def test_execute_resets_tty_on_keyboard_interrupt(monkeypatch, capsys):
+    class FakeProc:
+        def __init__(self):
+            self.calls = 0
+
+        def wait(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise KeyboardInterrupt
+            return 130
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: FakeProc())
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.delenv("TMUX", raising=False)
+
+    rc = runtime._execute(["docker", "run", "hi"])
+    assert rc == 130
+    out = capsys.readouterr().out
+    assert runtime._RESET_EXTENDED_KEYS in out
+
+
 def test_run_end_to_end(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(runtime, "ensure_daemon", lambda: None)
     captured: dict[str, list[str]] = {}
@@ -253,6 +349,23 @@ def test_run_end_to_end(tmp_path: Path, monkeypatch):
     rc = runtime.run(r, tmp_path)
     assert rc == 0
     assert captured["argv"][0] == "docker"
+
+
+def test_run_patches_claude_json_shift_enter_flag(tmp_path: Path, monkeypatch):
+    import json as _json
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(runtime, "ensure_daemon", lambda: None)
+    monkeypatch.setattr(runtime, "_execute", lambda argv: 0)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    r = _resolved(proj)
+    rc = runtime.run(r, proj)
+    assert rc == 0
+    from contained import state
+    claude_json = state.project_state_dir(proj) / "claude.json"
+    assert claude_json.exists()
+    data = _json.loads(claude_json.read_text())
+    assert data.get("shiftEnterKeyBindingInstalled") is True
 
 
 def _mock_build(monkeypatch):

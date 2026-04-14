@@ -382,7 +382,10 @@ def test_runtime_seeds_credentials_before_launch(tmp_path: Path, monkeypatch):
     state_dir = state.agent_state_dir(proj, "claude")
     pstate = state.project_state_dir(proj)
     assert (state_dir / ".credentials.json").read_text() == '{"k":"v"}'
-    assert (pstate / "claude.json").read_text() == '{"onboarded": true}'
+    import json as _json
+    data = _json.loads((pstate / "claude.json").read_text())
+    # Host-seeded keys are preserved and the shift-enter flag is added.
+    assert data == {"onboarded": True, "shiftEnterKeyBindingInstalled": True}
 
 
 def test_resolve_warns_when_no_credentials(tmp_path: Path, monkeypatch):
@@ -399,6 +402,48 @@ def test_resolve_warns_when_no_credentials(tmp_path: Path, monkeypatch):
     assert any("claude/.credentials.json" in w for w in r.warnings)
     # claude.json has a fallback → no warning, just a placeholder
     assert not any("claude.json " in w for w in r.warnings)
+
+
+def test_patch_claude_json_on_missing_file(tmp_path: Path):
+    p = tmp_path / "claude.json"
+    assert state.patch_claude_json_shift_enter(p) is True
+    import json
+    assert json.loads(p.read_text()) == {"shiftEnterKeyBindingInstalled": True}
+
+
+def test_patch_claude_json_preserves_existing_keys(tmp_path: Path):
+    p = tmp_path / "claude.json"
+    p.write_text('{"theme": "dark", "tips": 3}')
+    assert state.patch_claude_json_shift_enter(p) is True
+    import json
+    data = json.loads(p.read_text())
+    assert data == {
+        "theme": "dark",
+        "tips": 3,
+        "shiftEnterKeyBindingInstalled": True,
+    }
+
+
+def test_patch_claude_json_is_idempotent(tmp_path: Path):
+    p = tmp_path / "claude.json"
+    p.write_text('{"shiftEnterKeyBindingInstalled": true, "x": 1}')
+    assert state.patch_claude_json_shift_enter(p) is False
+    import json
+    assert json.loads(p.read_text())["x"] == 1
+
+
+def test_patch_claude_json_leaves_malformed_file_alone(tmp_path: Path):
+    p = tmp_path / "claude.json"
+    p.write_text("{not json")
+    assert state.patch_claude_json_shift_enter(p) is False
+    assert p.read_text() == "{not json"
+
+
+def test_patch_claude_json_leaves_non_object_alone(tmp_path: Path):
+    p = tmp_path / "claude.json"
+    p.write_text("[1,2,3]")
+    assert state.patch_claude_json_shift_enter(p) is False
+    assert p.read_text() == "[1,2,3]"
 
 
 def test_dry_run_shows_no_state_note(tmp_path: Path, monkeypatch):

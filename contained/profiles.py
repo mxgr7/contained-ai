@@ -131,7 +131,20 @@ def names() -> list[str]:
     return sorted(_PROFILES)
 
 
-TOOL_DEFAULT_ENV: list[str] = ["TERM", "LANG", "LC_ALL", "TZ"]
+TOOL_DEFAULT_ENV: list[str] = [
+    "TERM",
+    # Terminal-identification vars that agents (Claude Code in
+    # particular) sniff to decide which input-parsing mode to enable.
+    # Without TERM_PROGRAM set, Claude Code ignores the \e\r sequence
+    # that iTerm2 / tmux / VSCode send for Shift-Enter, even when
+    # shiftEnterKeyBindingInstalled is true in ~/.claude.json.
+    "TERM_PROGRAM",
+    "TERM_PROGRAM_VERSION",
+    "COLORTERM",
+    "LANG",
+    "LC_ALL",
+    "TZ",
+]
 
 TOOL_DEFAULT_ALLOWLIST: list[str] = [
     "github.com:443",
