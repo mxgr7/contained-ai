@@ -199,12 +199,23 @@ def resolve(
         if sock:
             ssh_auth_sock_host_path = sock
 
-    state_mount: Mount | None = None
     planned_seeds: list[state.PlannedSeed] = []
     if not overrides.no_state and profile.state_mount is not None:
-        host = state.agent_state_dir(cwd, profile.name)
-        state_mount = Mount(host=host, container=profile.state_mount, read_only=False)
-        mounts.append(state_mount)
+        # Cross-mount every profile's state dir into every container:
+        # all agent CLIs live in the same base image (see
+        # Dockerfile.base), so either agent may invoke the other and
+        # should find the other's per-project state where it expects
+        # it. Only the entrypoint differs between `contained run
+        # claude` and `contained run pi`.
+        seen_containers: set[str] = set()
+        for p in profiles.all_profiles():
+            if p.state_mount is None or p.state_mount in seen_containers:
+                continue
+            host = state.agent_state_dir(cwd, p.name)
+            mounts.append(
+                Mount(host=host, container=p.state_mount, read_only=False)
+            )
+            seen_containers.add(p.state_mount)
 
         if profile.file_seeds:
             pstate = state.project_state_dir(cwd)

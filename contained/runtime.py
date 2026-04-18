@@ -327,7 +327,13 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
     ensure_daemon()
 
     if not resolved.no_state and resolved.agent.state_mount is not None:
-        state.ensure_agent_state_dir(cwd, resolved.agent.name)
+        # Matches the cross-mount in run.resolve(): every profile's
+        # state dir is bound into every container, so every dir has
+        # to exist on the host before docker starts.
+        for p in profiles.all_profiles():
+            if p.state_mount is None:
+                continue
+            state.ensure_agent_state_dir(cwd, p.name)
 
     if resolved.planned_seeds:
         if any(p.seed.is_global for p in resolved.planned_seeds):

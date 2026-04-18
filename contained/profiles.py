@@ -98,47 +98,67 @@ PI_CREDENTIALS_SEED = FileSeed(
 )
 
 
+# Shared container environment for every agent profile. Claude and pi
+# are both installed in the same base image (see Dockerfile.base), and
+# from the sandbox's point of view they are interchangeable processes
+# — a user may invoke one from inside the other. So env forwarding,
+# egress allowlist, and seed files are identical across profiles, and
+# only the entrypoint (and any agent-specific args) differ. The
+# runtime also cross-mounts every profile's state_mount, so either
+# agent finds both ``~/.claude`` and ``~/.pi`` state when it starts.
+_SHARED_ENV: list[str] = [
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "CLAUDE_MODEL",
+]
+
+_SHARED_ALLOWLIST: list[str] = [
+    "api.anthropic.com:443",
+    "platform.claude.com:443",
+    "api.openai.com:443",
+]
+
+_SHARED_FILE_SEEDS: list[FileSeed] = [
+    CLAUDE_CREDENTIALS_SEED,
+    PI_CREDENTIALS_SEED,
+    # Onboarding / per-project config (theme, tips history,
+    # hasCompletedOnboarding, etc.) lives at ~/.claude.json — outside
+    # ~/.claude/ — so it needs its own file-level bind. Falls back to
+    # an empty JSON object if the host has none yet, so the
+    # container's first-run state persists for next time.
+    FileSeed(
+        sources=("~/.claude.json",),
+        state_rel="claude.json",
+        container_path="/home/agent/.claude.json",
+        fallback_content=b"{}\n",
+    ),
+]
+
+
 CLAUDE = AgentProfile(
     name="claude",
     image=BASE_IMAGE,
     entrypoint=["claude"],
-    env=["ANTHROPIC_API_KEY", "CLAUDE_MODEL"],
+    env=list(_SHARED_ENV),
     # The container is already sandboxed (no host fs access, egress
     # allowlist, non-root, cap-drop all), so Claude's per-call permission
     # gating adds friction without meaningful protection. Default to
     # bypassPermissions; override in contained.yaml if a project wants
     # the interactive prompts back.
     args=["--permission-mode", "bypassPermissions"],
-    allowlist=["api.anthropic.com:443", "platform.claude.com:443"],
+    allowlist=list(_SHARED_ALLOWLIST),
     state_mount="/home/agent/.claude",
-    file_seeds=[
-        CLAUDE_CREDENTIALS_SEED,
-        PI_CREDENTIALS_SEED,
-        # Onboarding / per-project config (theme, tips history,
-        # hasCompletedOnboarding, etc.) lives at ~/.claude.json —
-        # outside ~/.claude/ — so it needs its own file-level bind.
-        # Falls back to an empty JSON object if the host has none yet,
-        # so the container's first-run state persists for next time.
-        FileSeed(
-            sources=("~/.claude.json",),
-            state_rel="claude.json",
-            container_path="/home/agent/.claude.json",
-            fallback_content=b"{}\n",
-        ),
-    ],
+    file_seeds=list(_SHARED_FILE_SEEDS),
 )
 
 PI = AgentProfile(
     name="pi",
     image=BASE_IMAGE,
     entrypoint=["pi"],
-    env=["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
-    allowlist=["api.openai.com:443", "api.anthropic.com:443"],
+    env=list(_SHARED_ENV),
+    allowlist=list(_SHARED_ALLOWLIST),
     state_mount="/home/agent/.pi",
-    # Both credentials shared tool-wide: pi may drive Claude as a
-    # sub-agent, and the user may want to reuse a host-side `pi /login`
-    # across projects and parallel sessions.
-    file_seeds=[CLAUDE_CREDENTIALS_SEED, PI_CREDENTIALS_SEED],
+    file_seeds=list(_SHARED_FILE_SEEDS),
 )
 
 
@@ -158,6 +178,11 @@ def get(name: str) -> AgentProfile:
 
 def names() -> list[str]:
     return sorted(_PROFILES)
+
+
+def all_profiles() -> list[AgentProfile]:
+    """Every registered profile, in name order."""
+    return [_PROFILES[n] for n in names()]
 
 
 TOOL_DEFAULT_ENV: list[str] = [

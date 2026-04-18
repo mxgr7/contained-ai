@@ -385,18 +385,21 @@ Diagnostics that run even when Docker isn't installed. Checks:
 
 ## Agent profiles
 
-Two profiles ship in MVP:
+Both profiles run in the same container image and see the same
+environment — only the entrypoint differs between `contained run
+claude` and `contained run pi`. Both CLIs are installed in either
+case, both `~/.claude` and `~/.pi` state dirs are bound, and both
+OAuth tokens are shared tool-wide (see credential forwarding above).
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `CLAUDE_MODEL` are forwarded
+in both profiles so either agent can reach either provider.
 
-- **`claude`** — Claude Code (`@anthropic-ai/claude-code`). Forwards
-  `ANTHROPIC_API_KEY`, `CLAUDE_MODEL`. Seeds
-  `~/.claude/.credentials.json` on first run.
+- **`claude`** — Claude Code (`@anthropic-ai/claude-code`). Runs with
+  `--permission-mode bypassPermissions` by default (the sandbox
+  already enforces the real boundary).
 - **`pi`** — pi coding-agent (`@mariozechner/pi-coding-agent`).
-  Forwards `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. First-run auth via
-  `pi /login` inside the container or an exported API key env var;
-  non-credential state (settings, session history) persists per
-  project under `/home/agent/.pi`. The OAuth token (`auth.json`) is
-  shared tool-wide like Claude's — both agents mount it, so a login
-  done in any container is available everywhere.
+  First-run auth via `pi /login` inside the container or an exported
+  API key env var; non-credential state (settings, session history)
+  persists per project.
 
 Adding a third profile is a single file edit: define an
 `AgentProfile` constant in `contained/profiles.py` and add it to the

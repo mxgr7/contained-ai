@@ -89,6 +89,27 @@ def test_pi_profile_has_its_own_state_mount(tmp_path: Path, monkeypatch):
     assert pi_mounts[0].host.name == "pi"
 
 
+def test_state_mounts_are_cross_mounted_across_agents(
+    tmp_path: Path, monkeypatch
+):
+    """Both ~/.claude and ~/.pi state dirs are bound regardless of agent."""
+    _force_keychain_miss(monkeypatch)
+    _redirect_state(monkeypatch, tmp_path / "xdg")
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("HOME", str(fake_home))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    for agent in ("claude", "pi"):
+        r = resolve(agent, _loaded(proj), CliOverrides(), cwd=proj)
+        mounts_by_container = {m.container: m for m in r.mounts}
+        claude_mount = mounts_by_container["/home/agent/.claude"]
+        pi_mount = mounts_by_container["/home/agent/.pi"]
+        assert claude_mount.host == state.agent_state_dir(proj, "claude"), agent
+        assert pi_mount.host == state.agent_state_dir(proj, "pi"), agent
+
+
 def test_pi_profile_shares_claude_credentials(tmp_path: Path, monkeypatch):
     """pi containers get the same global Claude credential bind as claude."""
     _force_keychain_miss(monkeypatch)
