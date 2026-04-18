@@ -89,6 +89,46 @@ def test_pi_profile_has_its_own_state_mount(tmp_path: Path, monkeypatch):
     assert pi_mounts[0].host.name == "pi"
 
 
+def test_pi_profile_shares_claude_credentials(tmp_path: Path, monkeypatch):
+    """pi containers get the same global Claude credential bind as claude."""
+    _force_keychain_miss(monkeypatch)
+    _redirect_state(monkeypatch, tmp_path / "xdg")
+    fake_home = tmp_path / "home"
+    (fake_home / ".claude").mkdir(parents=True)
+    (fake_home / ".claude" / ".credentials.json").write_bytes(b'{"k":"v"}')
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("HOME", str(fake_home))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    r = resolve("pi", _loaded(proj), CliOverrides(), cwd=proj)
+    mounts_by_container = {m.container: m for m in r.mounts}
+    creds_mount = mounts_by_container["/home/agent/.claude/.credentials.json"]
+    assert creds_mount.host == state.global_state_dir() / "claude/.credentials.json"
+    assert creds_mount.read_only is False
+
+
+def test_pi_auth_is_shared_globally_across_both_profiles(
+    tmp_path: Path, monkeypatch
+):
+    """pi's auth.json lives in the global dir and binds into both agents."""
+    _force_keychain_miss(monkeypatch)
+    _redirect_state(monkeypatch, tmp_path / "xdg")
+    fake_home = tmp_path / "home"
+    (fake_home / ".pi" / "agent").mkdir(parents=True)
+    (fake_home / ".pi" / "agent" / "auth.json").write_bytes(b'{"t":"pi"}')
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.setenv("HOME", str(fake_home))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    expected_host = state.global_state_dir() / "pi/agent/auth.json"
+    for agent in ("claude", "pi"):
+        r = resolve(agent, _loaded(proj), CliOverrides(), cwd=proj)
+        mounts_by_container = {m.container: m for m in r.mounts}
+        pi_auth = mounts_by_container["/home/agent/.pi/agent/auth.json"]
+        assert pi_auth.host == expected_host, agent
+        assert pi_auth.read_only is False, agent
+
+
 def test_refuse_root_mount(tmp_path: Path):
     with pytest.raises(ConfigError, match="root"):
         resolve(
@@ -206,6 +246,7 @@ def _force_keychain_miss(monkeypatch):
 
 
 def test_plan_seeds_reads_host_file(tmp_path: Path, monkeypatch):
+    _redirect_state(monkeypatch, tmp_path / "xdg")
     _force_keychain_miss(monkeypatch)
     from contained import profiles
     fake_home = tmp_path / "home"
@@ -217,15 +258,21 @@ def test_plan_seeds_reads_host_file(tmp_path: Path, monkeypatch):
     pstate = tmp_path / "pstate"
     pstate.mkdir()
     plans = state.plan_seeds(profiles.CLAUDE, pstate)
-    assert len(plans) == 2
+    assert len(plans) == 3
     by_rel = {p.seed.state_rel: p for p in plans}
-    assert by_rel["claude/.credentials.json"].data == b'{"k":"v"}'
-    assert by_rel["claude/.credentials.json"].needs_mount is False
+    creds = by_rel["claude/.credentials.json"]
+    assert creds.data == b'{"k":"v"}'
+    # Credentials are a global seed — always file-bound and stored
+    # outside the per-project state dir.
+    assert creds.needs_mount is True
+    assert creds.host_path == state.global_state_dir() / "claude/.credentials.json"
+    assert pstate not in creds.host_path.parents
     assert by_rel["claude.json"].data == b'{"onboarded": true}'
     assert by_rel["claude.json"].needs_mount is True
 
 
 def test_plan_seeds_uses_keychain_on_darwin(tmp_path: Path, monkeypatch):
+    _redirect_state(monkeypatch, tmp_path / "xdg")
     from contained import profiles
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(state, "_keychain_cache", {}, raising=False)
@@ -247,6 +294,7 @@ def test_plan_seeds_uses_keychain_on_darwin(tmp_path: Path, monkeypatch):
 
 
 def test_plan_seeds_fallback_for_needs_mount(tmp_path: Path, monkeypatch):
+    _redirect_state(monkeypatch, tmp_path / "xdg")
     _force_keychain_miss(monkeypatch)
     from contained import profiles
     fake_home = tmp_path / "home"
@@ -260,13 +308,17 @@ def test_plan_seeds_fallback_for_needs_mount(tmp_path: Path, monkeypatch):
     assert cj.source is None
     assert cj.data == b"{}\n"
     assert cj.needs_mount is True
-    # Credentials: no host source, no fallback, not written.
+    # Credentials: no host source. Global seeds are file-bound, so a
+    # fallback placeholder is written (empty bytes) so the bind target
+    # exists and the container's writes persist globally.
     creds = next(p for p in plans if p.seed.state_rel == "claude/.credentials.json")
     assert creds.source is None
-    assert creds.data is None
+    assert creds.data == b""
+    assert creds.needs_mount is True
 
 
 def test_plan_seeds_reuses_cached_state(tmp_path: Path, monkeypatch):
+    _redirect_state(monkeypatch, tmp_path / "xdg")
     _force_keychain_miss(monkeypatch)
     from contained import profiles
     fake_home = tmp_path / "home"
@@ -274,8 +326,11 @@ def test_plan_seeds_reuses_cached_state(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
     monkeypatch.setenv("HOME", str(fake_home))
     pstate = tmp_path / "pstate"
-    (pstate / "claude").mkdir(parents=True)
-    (pstate / "claude" / ".credentials.json").write_bytes(b"prior")
+    pstate.mkdir()
+    # Credentials are global — stash prior file in the global dir.
+    gstate = state.global_state_dir()
+    (gstate / "claude").mkdir(parents=True)
+    (gstate / "claude" / ".credentials.json").write_bytes(b"prior")
     plans = state.plan_seeds(profiles.CLAUDE, pstate)
     creds = next(p for p in plans if p.seed.state_rel == "claude/.credentials.json")
     assert creds.source == "(cached)"
@@ -325,9 +380,11 @@ def test_resolve_adds_bind_mount_for_claude_json(tmp_path: Path, monkeypatch):
     r = resolve("claude", _loaded(proj), CliOverrides(), cwd=proj)
     mounts_by_container = {m.container: m for m in r.mounts}
     assert "/home/agent/.claude.json" in mounts_by_container
-    # Credentials live under the state_mount dir so they shouldn't get
-    # their own file bind.
-    assert "/home/agent/.claude/.credentials.json" not in mounts_by_container
+    # Credentials are global and always get their own file bind that
+    # overlays the per-project state_mount.
+    creds_mount = mounts_by_container["/home/agent/.claude/.credentials.json"]
+    assert creds_mount.host == state.global_state_dir() / "claude/.credentials.json"
+    assert "projects" not in creds_mount.host.parts
 
 
 def test_runtime_prints_seed_notice(tmp_path: Path, monkeypatch, capsys):
@@ -379,9 +436,10 @@ def test_runtime_seeds_credentials_before_launch(tmp_path: Path, monkeypatch):
     proj.mkdir()
     r = resolve("claude", _loaded(proj), CliOverrides(), cwd=proj)
     runtime.run(r, proj)
-    state_dir = state.agent_state_dir(proj, "claude")
     pstate = state.project_state_dir(proj)
-    assert (state_dir / ".credentials.json").read_text() == '{"k":"v"}'
+    gstate = state.global_state_dir()
+    # Credentials land in the tool-wide global dir, shared across projects.
+    assert (gstate / "claude" / ".credentials.json").read_text() == '{"k":"v"}'
     import json as _json
     data = _json.loads((pstate / "claude.json").read_text())
     # Host-seeded keys are preserved and the shift-enter flag is added.

@@ -15,7 +15,7 @@ from .config import ConfigError
 
 @dataclass(frozen=True)
 class FileSeed:
-    """A host file to seed into per-project state on first run.
+    """A host file to seed into state on first run.
 
     ``sources`` is a list of source specs tried in order; the first one
     that resolves wins. A spec is either a host filesystem path (may
@@ -23,24 +23,29 @@ class FileSeed:
     keychain (via ``security find-generic-password``).
 
     ``state_rel`` is the destination, relative to the per-project
-    state dir (the parent of the agent state dir). ``container_path``
-    is where the file should appear inside the container.
+    state dir (the parent of the agent state dir) — or, when
+    ``is_global`` is set, relative to the tool-wide global state dir
+    shared across all projects. ``container_path`` is where the file
+    should appear inside the container.
 
-    If ``container_path`` is under the agent's ``state_mount`` it is
-    already covered by the directory-level state mount and no extra
-    bind is needed. Otherwise a file-level bind is added.
+    If ``container_path`` is under the agent's ``state_mount`` and the
+    seed is per-project, it is already covered by the directory-level
+    state mount and no extra bind is needed. Otherwise (or always for
+    ``is_global=True``) a file-level bind is added so the global file
+    overlays the per-project state mount.
 
     ``fallback_content`` is written as a placeholder when no source
     resolves AND a file-level bind is required — so the mount target
     exists and the container's writes persist across runs. For files
-    that live under ``state_mount`` the container can create them
-    itself, so the fallback is unused.
+    that live under ``state_mount`` (per-project only) the container
+    can create them itself, so the fallback is unused.
     """
 
     sources: tuple[str, ...]
     state_rel: str
     container_path: str
     fallback_content: bytes = b""
+    is_global: bool = False
 
 
 @dataclass(frozen=True)
@@ -62,6 +67,37 @@ class AgentProfile:
 BASE_IMAGE = "ghcr.io/contained-ai/contained-base:edge"
 PROXY_IMAGE = "ghcr.io/contained-ai/contained-proxy:edge"
 
+
+# Claude Code OAuth token, shared tool-wide so every container (every
+# project, every concurrent run, every agent profile) reads and writes
+# the same credential — token refreshes propagate automatically. A
+# file-level bind overlays the per-project state_mount at the same
+# path. macOS Claude Code stores the token in the login keychain; the
+# Linux distribution stores it at ~/.claude/.credentials.json. Either
+# source works — whichever the host has.
+CLAUDE_CREDENTIALS_SEED = FileSeed(
+    sources=(
+        "keychain:Claude Code-credentials",
+        "~/.claude/.credentials.json",
+    ),
+    state_rel="claude/.credentials.json",
+    container_path="/home/agent/.claude/.credentials.json",
+    is_global=True,
+)
+
+# pi coding-agent OAuth token, shared tool-wide the same way as
+# CLAUDE_CREDENTIALS_SEED. pi writes its login state to
+# ~/.pi/agent/auth.json (0600) after `pi /login`; all other files in
+# ~/.pi/ (settings, session history) stay per-project via the
+# state_mount.
+PI_CREDENTIALS_SEED = FileSeed(
+    sources=("~/.pi/agent/auth.json",),
+    state_rel="pi/agent/auth.json",
+    container_path="/home/agent/.pi/agent/auth.json",
+    is_global=True,
+)
+
+
 CLAUDE = AgentProfile(
     name="claude",
     image=BASE_IMAGE,
@@ -76,19 +112,8 @@ CLAUDE = AgentProfile(
     allowlist=["api.anthropic.com:443", "platform.claude.com:443"],
     state_mount="/home/agent/.claude",
     file_seeds=[
-        # OAuth token. macOS Claude Code stores it in the login
-        # keychain; the Linux distribution stores it at
-        # ~/.claude/.credentials.json. Either source works — whichever
-        # the host has. Lands inside the state_mount dir, so no extra
-        # bind is needed.
-        FileSeed(
-            sources=(
-                "keychain:Claude Code-credentials",
-                "~/.claude/.credentials.json",
-            ),
-            state_rel="claude/.credentials.json",
-            container_path="/home/agent/.claude/.credentials.json",
-        ),
+        CLAUDE_CREDENTIALS_SEED,
+        PI_CREDENTIALS_SEED,
         # Onboarding / per-project config (theme, tips history,
         # hasCompletedOnboarding, etc.) lives at ~/.claude.json —
         # outside ~/.claude/ — so it needs its own file-level bind.
@@ -110,6 +135,10 @@ PI = AgentProfile(
     env=["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
     allowlist=["api.openai.com:443", "api.anthropic.com:443"],
     state_mount="/home/agent/.pi",
+    # Both credentials shared tool-wide: pi may drive Claude as a
+    # sub-agent, and the user may want to reuse a host-side `pi /login`
+    # across projects and parallel sessions.
+    file_seeds=[CLAUDE_CREDENTIALS_SEED, PI_CREDENTIALS_SEED],
 )
 
 

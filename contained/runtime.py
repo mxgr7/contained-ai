@@ -330,6 +330,8 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
         state.ensure_agent_state_dir(cwd, resolved.agent.name)
 
     if resolved.planned_seeds:
+        if any(p.seed.is_global for p in resolved.planned_seeds):
+            state.ensure_global_state_dir()
         written = state.apply_seeds(resolved.planned_seeds)
         for p in written:
             origin = p.source if p.source is not None else "empty placeholder"

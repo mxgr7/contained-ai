@@ -437,9 +437,13 @@ def _seed_warnings(plans: list[state.PlannedSeed]) -> list[str]:
     for p in plans:
         if p.source is not None:
             continue  # resolved from host source or cached from prior run
-        if p.needs_mount:
-            continue  # fallback placeholder will be written; no prompt expected
-        # No source found and nothing to write — the agent will prompt.
+        if p.seed.fallback_content:
+            # A meaningful fallback will be written (e.g. ``{}\n`` for
+            # claude.json) — no auth prompt expected. Credentials use
+            # an empty fallback purely as a bind-mount target, so the
+            # agent will still prompt; that path falls through to the
+            # warning below.
+            continue
         tried = ", ".join(p.seed.sources)
         out.append(
             f"warning: no host source for {p.seed.state_rel} "

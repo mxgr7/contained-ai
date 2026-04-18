@@ -37,6 +37,16 @@ def agent_state_dir(project_path: Path, agent_name: str) -> Path:
     return project_state_dir(project_path) / agent_name
 
 
+def global_state_dir() -> Path:
+    """Tool-wide state dir shared across all projects.
+
+    Used for credentials (and other secrets) that should be the same
+    everywhere the tool runs, so token refreshes in one container
+    propagate to every other container.
+    """
+    return state_root() / "global"
+
+
 def ensure_agent_state_dir(project_path: Path, agent_name: str) -> Path:
     d = agent_state_dir(project_path, agent_name)
     d.mkdir(parents=True, exist_ok=True)
@@ -47,6 +57,16 @@ def ensure_agent_state_dir(project_path: Path, agent_name: str) -> Path:
     parent = d.parent
     try:
         parent.chmod(0o700)
+    except OSError:
+        pass
+    return d
+
+
+def ensure_global_state_dir() -> Path:
+    d = global_state_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        d.chmod(0o700)
     except OSError:
         pass
     return d
@@ -88,9 +108,16 @@ def plan_seeds(profile: AgentProfile, pstate_dir: Path) -> list[PlannedSeed]:
     """Decide what to seed for each FileSeed, without writing anything."""
     plans: list[PlannedSeed] = []
     state_mount = profile.state_mount
+    gstate_dir = global_state_dir()
     for seed in profile.file_seeds:
-        host_path = pstate_dir / seed.state_rel
-        needs_mount = not _path_under(seed.container_path, state_mount)
+        if seed.is_global:
+            host_path = gstate_dir / seed.state_rel
+            # Global seeds always need an explicit file-level bind —
+            # otherwise the per-project state_mount would shadow them.
+            needs_mount = True
+        else:
+            host_path = pstate_dir / seed.state_rel
+            needs_mount = not _path_under(seed.container_path, state_mount)
 
         if host_path.exists():
             plans.append(

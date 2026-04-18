@@ -111,8 +111,11 @@ What happens:
    (`<basename>-<sha256(abspath)[:8]>`).
 2. It creates the per-project state dir at
    `~/.local/share/contained/projects/<project-id>/claude/`.
-3. On first run, it copies `~/.claude/.credentials.json` into that
-   state dir so Claude Code finds its auth.
+3. On first run, it copies `~/.claude/.credentials.json` (or the
+   equivalent macOS keychain entry) into a tool-wide global dir at
+   `~/.local/share/contained/global/claude/.credentials.json` and
+   bind-mounts it into every container, so all `contained` runs share
+   a single credential (token refreshes propagate automatically).
 4. It creates a `--internal` Docker network, starts a tinyproxy
    sidecar on it with the resolved allowlist, and attaches the agent
    container to that network only.
@@ -274,11 +277,16 @@ else it wants to the per-project state dir:
 Two projects have different hashes → completely separate state. No
 cross-contamination.
 
-Credential forwarding is a **scoped writable copy**: on first run,
-`contained` copies the minimum credential file from the host into the
-per-project state dir (Claude: `~/.claude/.credentials.json`). The
-container then reads and writes its own copy. Your canonical host
-credentials are never exposed to the container.
+Credential forwarding is a **scoped writable copy**. On first run,
+`contained` copies the minimum credential file from the host
+(Claude: `~/.claude/.credentials.json` or the macOS keychain entry)
+into a tool-wide global dir at
+`~/.local/share/contained/global/claude/.credentials.json` and
+bind-mounts it into every container. All `contained` runs share this
+single credential, so OAuth token refreshes done inside one container
+propagate to every other one — no relogin churn across projects or
+parallel sessions. Your canonical host credentials are never exposed
+to the container.
 
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc. are forwarded per-profile
 — `claude` doesn't see `OPENAI_API_KEY` and `pi` doesn't see the
@@ -385,7 +393,10 @@ Two profiles ship in MVP:
 - **`pi`** — pi coding-agent (`@mariozechner/pi-coding-agent`).
   Forwards `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. First-run auth via
   `pi /login` inside the container or an exported API key env var;
-  state persists under `/home/agent/.pi`.
+  non-credential state (settings, session history) persists per
+  project under `/home/agent/.pi`. The OAuth token (`auth.json`) is
+  shared tool-wide like Claude's — both agents mount it, so a login
+  done in any container is available everywhere.
 
 Adding a third profile is a single file edit: define an
 `AgentProfile` constant in `contained/profiles.py` and add it to the
