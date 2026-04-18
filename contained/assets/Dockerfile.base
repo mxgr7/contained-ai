@@ -16,7 +16,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-        ca-certificates curl git gnupg openssh-client netcat-openbsd \
+        ca-certificates curl git gnupg openssh-client netcat-openbsd unzip \
         build-essential pkg-config \
         python3 python3-pip python3-venv python3-dev pipx \
         tini \
@@ -43,7 +43,8 @@ RUN groupadd --gid 1000 agent \
 RUN mkdir -p /home/agent/.npm-global \
  && chown -R agent:agent /home/agent/.npm-global
 ENV NPM_CONFIG_PREFIX=/home/agent/.npm-global \
-    PATH=/home/agent/.local/bin:/home/agent/.npm-global/bin:$PATH \
+    BUN_INSTALL=/home/agent/.bun \
+    PATH=/home/agent/.local/bin:/home/agent/.npm-global/bin:/home/agent/.bun/bin:$PATH \
     DISABLE_AUTOUPDATER=1
 
 USER agent
@@ -57,8 +58,14 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 # Upstream: https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent
 RUN npm install -g @mariozechner/pi-coding-agent
 
+# wrangler — Cloudflare Workers CLI.
+RUN npm install -g wrangler
+
 # uv — fast Python package/venv manager from Astral. Installs to ~/.local/bin.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# bun — JavaScript runtime and package manager. Installs to ~/.bun/bin.
+RUN curl -fsSL https://bun.sh/install | bash
 
 # Default git identity so commits work without a host gitconfig mount.
 # Override at runtime by mounting ~/.gitconfig or passing GIT_AUTHOR_* env vars.
