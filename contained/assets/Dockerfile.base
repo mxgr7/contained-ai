@@ -19,7 +19,9 @@ RUN apt-get update \
         ca-certificates curl git gnupg openssh-client netcat-openbsd unzip \
         build-essential pkg-config \
         python3 python3-pip python3-venv python3-dev pipx \
+        ripgrep fd-find \
         tini \
+ && ln -s /usr/bin/fdfind /usr/local/bin/fd \
  && curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
  && install -m 0755 -d /etc/apt/keyrings \
