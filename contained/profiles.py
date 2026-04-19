@@ -116,6 +116,7 @@ _SHARED_ALLOWLIST: list[str] = [
     "api.anthropic.com:443",
     "platform.claude.com:443",
     "api.openai.com:443",
+    "openrouter.ai:443",
 ]
 
 _SHARED_FILE_SEEDS: list[FileSeed] = [
