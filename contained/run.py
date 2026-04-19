@@ -126,6 +126,15 @@ def resolve(
     # already mounts /workspace from a higher-priority layer.
     workspace_default = f"{cwd}:/workspace"
 
+    # Layer 3b: user-wide global env file. Applied to every
+    # ``contained run`` so provider API keys (or any env vars) can be
+    # set once in ~/.local/share/contained/global/env and shared
+    # across every project. Sits above the built-in profile defaults
+    # (so users can override them without touching profile code) and
+    # below contained.yaml (so per-project config wins).
+    global_env_specs = _load_global_env_file()
+    env_specs = _merge_env(env_specs, global_env_specs, "global env file")
+
     # Layer 3: defaults section
     d = loaded.defaults
     env_specs = _merge_env(env_specs, d.env, "contained.yaml defaults")
@@ -536,14 +545,29 @@ def _load_env_files(paths: list[Path]) -> list[str]:
     for p in paths:
         if not p.is_file():
             raise ConfigError(f"--env-from: no such file: {p}")
-        for lineno, raw in enumerate(p.read_text().splitlines(), start=1):
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                raise ConfigError(f"malformed env line at {p}:{lineno}")
-            out.append(line)
+        out.extend(_parse_env_file(p, missing_msg=f"--env-from: no such file: {p}"))
     return out
+
+
+def _parse_env_file(path: Path, *, missing_msg: str | None = None) -> list[str]:
+    if not path.is_file():
+        if missing_msg is not None:
+            raise ConfigError(missing_msg)
+        return []
+    out: list[str] = []
+    for lineno, raw in enumerate(path.read_text().splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise ConfigError(f"malformed env line at {path}:{lineno}")
+        out.append(line)
+    return out
+
+
+def _load_global_env_file() -> list[str]:
+    """Load the tool-wide env file if present, otherwise return empty."""
+    return _parse_env_file(state.global_env_file())
 
 
 _SENSITIVE_HINTS = (

@@ -172,6 +172,80 @@ def test_default_workspace_mount_refuses_home(tmp_path: Path, monkeypatch):
         resolve("claude", loaded, CliOverrides(), cwd=fake_home)
 
 
+def test_global_env_file_forwards_provider_keys(tmp_path: Path, monkeypatch):
+    """~/.local/share/contained/global/env applies to every run."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    from contained import state
+    gfile = state.global_env_file()
+    gfile.parent.mkdir(parents=True, exist_ok=True)
+    gfile.write_text(
+        "# global provider keys\n"
+        "OPENAI_API_KEY=sk-global\n"
+        "CUSTOM_KEY=value\n"
+        "\n"
+    )
+    loaded = load(None, cwd=tmp_path)
+    r = resolve("claude", loaded, CliOverrides(), cwd=tmp_path)
+    by_key = {e.key: e for e in r.env}
+    assert by_key["OPENAI_API_KEY"].value == "sk-global"
+    assert by_key["OPENAI_API_KEY"].from_host is False
+    assert by_key["OPENAI_API_KEY"].source == "global env file"
+    assert by_key["CUSTOM_KEY"].value == "value"
+
+
+def test_global_env_file_missing_is_fine(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    loaded = load(None, cwd=tmp_path)
+    r = resolve("claude", loaded, CliOverrides(), cwd=tmp_path)
+    # Profile-forwarded key reverts to from-host (no global override).
+    by_key = {e.key: e for e in r.env}
+    assert by_key["OPENAI_API_KEY"].from_host is True
+
+
+def test_cli_env_overrides_global_env_file(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    from contained import state
+    gfile = state.global_env_file()
+    gfile.parent.mkdir(parents=True, exist_ok=True)
+    gfile.write_text("OPENAI_API_KEY=sk-global\n")
+    loaded = load(None, cwd=tmp_path)
+    r = resolve(
+        "claude",
+        loaded,
+        CliOverrides(env=["OPENAI_API_KEY=sk-flag"]),
+        cwd=tmp_path,
+    )
+    by_key = {e.key: e for e in r.env}
+    assert by_key["OPENAI_API_KEY"].value == "sk-flag"
+    assert by_key["OPENAI_API_KEY"].source == "--env flag"
+
+
+def test_contained_yaml_overrides_global_env_file(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    from contained import state
+    gfile = state.global_env_file()
+    gfile.parent.mkdir(parents=True, exist_ok=True)
+    gfile.write_text("OPENAI_API_KEY=sk-global\n")
+    (tmp_path / "contained.yaml").write_text(
+        "defaults:\n  env: [OPENAI_API_KEY=sk-project]\n"
+    )
+    loaded = load(tmp_path / "contained.yaml", cwd=tmp_path)
+    r = resolve("claude", loaded, CliOverrides(), cwd=tmp_path)
+    by_key = {e.key: e for e in r.env}
+    assert by_key["OPENAI_API_KEY"].value == "sk-project"
+
+
+def test_global_env_file_rejects_malformed_line(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    from contained import state
+    gfile = state.global_env_file()
+    gfile.parent.mkdir(parents=True, exist_ok=True)
+    gfile.write_text("OPENAI_API_KEY=ok\nnot-an-env-line\n")
+    loaded = load(None, cwd=tmp_path)
+    with pytest.raises(ConfigError, match="malformed env line"):
+        resolve("claude", loaded, CliOverrides(), cwd=tmp_path)
+
+
 def test_user_mount_under_workspace_does_not_suppress_default(tmp_path: Path):
     sub = tmp_path / "fixtures"
     sub.mkdir()

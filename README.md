@@ -288,9 +288,23 @@ propagate to every other one — no relogin churn across projects or
 parallel sessions. Your canonical host credentials are never exposed
 to the container.
 
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc. are forwarded per-profile
-— `claude` doesn't see `OPENAI_API_KEY` and `pi` doesn't see the
-reverse. Values are masked in every place `contained` prints them.
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `CLAUDE_MODEL` are
+forwarded from the host shell in every profile. For persistent,
+user-wide defaults — so you don't have to re-export keys in every
+shell — drop a dotenv file at
+`~/.local/share/contained/global/env`:
+
+```sh
+# ~/.local/share/contained/global/env
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+One `KEY=VALUE` per line, `#` comments allowed. Applied to every
+`contained run` (loaded between the profile's built-in forwarding and
+any `contained.yaml`, so per-project config still wins). Recommend
+`chmod 600` on the file. Values are masked in every place `contained`
+prints them.
 
 Clean run, no persistence:
 

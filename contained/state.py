@@ -47,6 +47,19 @@ def global_state_dir() -> Path:
     return state_root() / "global"
 
 
+def global_env_file() -> Path:
+    """Dotenv file applied to every ``contained run`` invocation.
+
+    Users create this file themselves and drop provider API keys (or
+    any other env vars) in it — one ``KEY=VALUE`` per line, ``#``
+    comments allowed. Loaded once per run and merged between the
+    agent profile's built-in env forwarding and any ``contained.yaml``
+    in the project, so it overrides profile defaults but yields to
+    per-project config. Recommended mode 0600.
+    """
+    return global_state_dir() / "env"
+
+
 def ensure_agent_state_dir(project_path: Path, agent_name: str) -> Path:
     d = agent_state_dir(project_path, agent_name)
     d.mkdir(parents=True, exist_ok=True)
