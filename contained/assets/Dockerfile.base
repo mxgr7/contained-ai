@@ -105,4 +105,6 @@ RUN git config --global user.name  "Contained Agent" \
  && git config --global user.email "agent@contained.local" \
  && git config --global init.defaultBranch main
 
+RUN npm install -g agent-browser && agent-browser install
+
 CMD ["bash"]
