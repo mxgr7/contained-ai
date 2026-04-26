@@ -60,6 +60,20 @@ def global_env_file() -> Path:
     return global_state_dir() / "env"
 
 
+def agent_browser_profile_dir() -> Path:
+    return state_root() / "agent-browser"
+
+
+def ensure_agent_browser_profile_dir() -> Path:
+    d = agent_browser_profile_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        d.chmod(0o700)
+    except OSError:
+        pass
+    return d
+
+
 def ensure_agent_state_dir(project_path: Path, agent_name: str) -> Path:
     d = agent_state_dir(project_path, agent_name)
     d.mkdir(parents=True, exist_ok=True)

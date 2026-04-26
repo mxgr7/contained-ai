@@ -56,6 +56,16 @@ RUN apt-get update \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
 
+# Chromium for agent-browser. Use the distro package instead of Chrome for
+# Testing — that channel has no ARM64 Linux build, and apt's chromium pulls in
+# all the X11/GTK/NSS runtime libs as deps. agent-browser auto-detects
+# /usr/bin/chromium via PATH (find_chrome in cli/src/native/cdp/chrome.rs).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        chromium \
+        fonts-noto-color-emoji fonts-noto-cjk fonts-freefont-ttf \
+ && rm -rf /var/lib/apt/lists/*
+
 # Non-root user. uid/gid 1000 matches the `--user` the runtime passes.
 RUN groupadd --gid 1000 agent \
  && useradd  --uid 1000 --gid 1000 --create-home --shell /bin/bash agent \
@@ -70,7 +80,8 @@ ENV NPM_CONFIG_PREFIX=/home/agent/.npm-global \
     BUN_INSTALL=/home/agent/.bun \
     PATH=/home/agent/.local/bin:/home/agent/.npm-global/bin:/home/agent/.bun/bin:$PATH \
     DISABLE_AUTOUPDATER=1 \
-    CLAUDE_CODE_NO_FLICKER=1
+    CLAUDE_CODE_NO_FLICKER=1 \
+    AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 
 # Login shells (e.g. tmux panes) re-source /etc/profile, which resets PATH and
 # drops the agent-local bin dirs the ENV above sets. Re-add them via profile.d.
@@ -105,6 +116,9 @@ RUN git config --global user.name  "Contained Agent" \
  && git config --global user.email "agent@contained.local" \
  && git config --global init.defaultBranch main
 
-RUN npm install -g agent-browser && agent-browser install
+# agent-browser — Vercel Labs CDP browser automation daemon.
+# Skip `agent-browser install` (Chrome for Testing has no ARM64 build); the
+# package picks up system chromium via AGENT_BROWSER_EXECUTABLE_PATH above.
+RUN npm install -g agent-browser
 
 CMD ["bash"]

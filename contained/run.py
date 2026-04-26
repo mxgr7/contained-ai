@@ -28,6 +28,7 @@ from .profiles import AgentProfile
 # carry their own tmux.conf into the container without remembering a flag.
 DEFAULT_TMUX_PREFIX = "C-a"
 DEFAULT_TMUX_CONFIG_PATH = Path("~/.config/tmux")
+AGENT_BROWSER_PROFILE_CONTAINER_PATH = "/home/agent/.local/share/contained/agent-browser"
 
 
 @dataclass
@@ -264,6 +265,17 @@ def resolve(
                 Mount(host=host, container=p.state_mount, read_only=False)
             )
             seen_containers.add(p.state_mount)
+
+        if not any(
+            m.container == AGENT_BROWSER_PROFILE_CONTAINER_PATH for m in mounts
+        ):
+            mounts.append(
+                Mount(
+                    host=state.agent_browser_profile_dir(),
+                    container=AGENT_BROWSER_PROFILE_CONTAINER_PATH,
+                    read_only=False,
+                )
+            )
 
         if profile.file_seeds:
             pstate = state.project_state_dir(cwd)

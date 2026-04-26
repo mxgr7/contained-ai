@@ -172,6 +172,33 @@ def test_default_workspace_mount_refuses_home(tmp_path: Path, monkeypatch):
         resolve("claude", loaded, CliOverrides(), cwd=fake_home)
 
 
+def test_agent_browser_profile_mounted_and_configured(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    loaded = load(None, cwd=tmp_path)
+    r = resolve("pi", loaded, CliOverrides(), cwd=tmp_path)
+
+    host_profile = tmp_path / "xdg" / "contained" / "agent-browser"
+    container_profile = "/home/agent/.local/share/contained/agent-browser"
+    assert any(
+        m.host == host_profile and m.container == container_profile and not m.read_only
+        for m in r.mounts
+    )
+    by_key = {e.key: e for e in r.env}
+    assert by_key["AGENT_BROWSER_PROFILE"].value == container_profile
+    assert by_key["AGENT_BROWSER_PROFILE"].from_host is False
+
+
+def test_agent_browser_profile_skipped_with_no_state(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    loaded = load(None, cwd=tmp_path)
+    r = resolve("pi", loaded, CliOverrides(no_state=True), cwd=tmp_path)
+
+    assert not any(
+        m.container == "/home/agent/.local/share/contained/agent-browser"
+        for m in r.mounts
+    )
+
+
 def test_global_env_file_forwards_provider_keys(tmp_path: Path, monkeypatch):
     """~/.local/share/contained/global/env applies to every run."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))

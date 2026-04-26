@@ -358,6 +358,7 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
             if p.state_mount is None:
                 continue
             state.ensure_agent_state_dir(cwd, p.name)
+        state.ensure_agent_browser_profile_dir()
 
     if resolved.planned_seeds:
         if any(p.seed.is_global for p in resolved.planned_seeds):

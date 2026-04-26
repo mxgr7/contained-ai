@@ -20,7 +20,15 @@ def _resolved(tmp_path: Path, **cli_kwargs):
         defaults=ConfigSection(),
         agents={},
     )
-    return resolve("claude", loaded, CliOverrides(**cli_kwargs), cwd=tmp_path)
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    return resolve(
+        "claude",
+        loaded,
+        CliOverrides(**cli_kwargs),
+        cwd=tmp_path,
+        host_env={"HOME": str(home)},
+    )
 
 
 def test_build_argv_has_security_flags(tmp_path: Path):

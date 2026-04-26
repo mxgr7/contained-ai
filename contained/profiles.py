@@ -110,6 +110,7 @@ _SHARED_ENV: list[str] = [
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
     "CLAUDE_MODEL",
+    "AGENT_BROWSER_PROFILE=/home/agent/.local/share/contained/agent-browser",
 ]
 
 _SHARED_ALLOWLIST: list[str] = [
