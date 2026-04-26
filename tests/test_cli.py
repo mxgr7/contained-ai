@@ -217,6 +217,12 @@ def test_run_claude_without_api_key_uses_oauth(tmp_path: Path, capsys, monkeypat
 def test_tmux_flag_dry_run(tmp_path: Path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    # Pin HOME to an isolated subdir so the auto-mount default for
+    # --tmux-config can't pick up the test runner's host config (and so
+    # the workspace mount-safety check doesn't see HOME == cwd).
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
     rc = cli.main(["run", "claude", "--tmux", "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out

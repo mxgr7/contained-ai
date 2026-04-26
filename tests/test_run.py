@@ -315,6 +315,108 @@ def test_tmux_prefix_dry_run_shows_wrapper(tmp_path: Path):
     assert "bind C-b send-prefix" in out
 
 
+def test_tmux_default_prefix_is_c_a(tmp_path: Path):
+    """--tmux without --tmux-prefix lands on C-a."""
+    loaded = load(None, cwd=tmp_path)
+    r = resolve(
+        "claude", loaded,
+        CliOverrides(tmux=True),
+        cwd=tmp_path,
+        host_env={"HOME": str(tmp_path)},
+    )
+    assert r.tmux is True
+    assert r.tmux_prefix == "C-a"
+
+
+def test_tmux_explicit_prefix_overrides_default(tmp_path: Path):
+    loaded = load(None, cwd=tmp_path)
+    r = resolve(
+        "claude", loaded,
+        CliOverrides(tmux=True, tmux_prefix="C-b"),
+        cwd=tmp_path,
+        host_env={"HOME": str(tmp_path)},
+    )
+    assert r.tmux_prefix == "C-b"
+
+
+def test_tmux_auto_mounts_default_host_config(tmp_path: Path):
+    """When the host has ~/.config/tmux/tmux.conf, --tmux mounts it by default."""
+    home = tmp_path / "home"
+    cfg_dir = home / ".config" / "tmux"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "tmux.conf").write_text("set -g status on\n")
+
+    loaded = load(None, cwd=tmp_path)
+    r = resolve(
+        "claude", loaded,
+        CliOverrides(tmux=True),
+        cwd=tmp_path,
+        host_env={"HOME": str(home)},
+    )
+    m = next(
+        (m for m in r.mounts if m.container == "/home/agent/.config/tmux"),
+        None,
+    )
+    assert m is not None
+    assert m.host == cfg_dir.resolve()
+    assert m.read_only is True
+
+
+def test_tmux_skips_auto_mount_when_host_has_no_tmux_config(tmp_path: Path):
+    """No host config dir → no auto-mount, no error."""
+    home = tmp_path / "home"
+    home.mkdir()
+    loaded = load(None, cwd=tmp_path)
+    r = resolve(
+        "claude", loaded,
+        CliOverrides(tmux=True),
+        cwd=tmp_path,
+        host_env={"HOME": str(home)},
+    )
+    assert not any(
+        m.container == "/home/agent/.config/tmux" for m in r.mounts
+    )
+
+
+def test_tmux_skips_auto_mount_when_host_dir_lacks_tmux_conf(tmp_path: Path):
+    """Host dir exists but is missing tmux.conf → silently skipped."""
+    home = tmp_path / "home"
+    (home / ".config" / "tmux").mkdir(parents=True)
+    loaded = load(None, cwd=tmp_path)
+    r = resolve(
+        "claude", loaded,
+        CliOverrides(tmux=True),
+        cwd=tmp_path,
+        host_env={"HOME": str(home)},
+    )
+    assert not any(
+        m.container == "/home/agent/.config/tmux" for m in r.mounts
+    )
+
+
+def test_tmux_explicit_config_takes_precedence_over_default(tmp_path: Path):
+    """--tmux-config wins even when ~/.config/tmux exists on host."""
+    home = tmp_path / "home"
+    default_cfg = home / ".config" / "tmux"
+    default_cfg.mkdir(parents=True)
+    (default_cfg / "tmux.conf").write_text("# default\n")
+
+    explicit = tmp_path / "explicit"
+    explicit.mkdir()
+    (explicit / "tmux.conf").write_text("# explicit\n")
+
+    loaded = load(None, cwd=tmp_path)
+    r = resolve(
+        "claude", loaded,
+        CliOverrides(tmux=True, tmux_config=explicit),
+        cwd=tmp_path,
+        host_env={"HOME": str(home)},
+    )
+    mounts = [m for m in r.mounts if m.container == "/home/agent/.config/tmux"]
+    assert len(mounts) == 1
+    assert mounts[0].host == explicit.resolve()
+
+
 def test_user_mount_under_workspace_does_not_suppress_default(tmp_path: Path):
     sub = tmp_path / "fixtures"
     sub.mkdir()

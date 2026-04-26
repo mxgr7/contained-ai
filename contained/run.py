@@ -22,6 +22,14 @@ from .config import ConfigError, LoadedConfig
 from .profiles import AgentProfile
 
 
+# Defaults that apply when `--tmux` is set without an explicit override.
+# C-a is the de facto convention (screen, GNU Emacs-style) and avoids the
+# C-b clash with readline word-back; the host config auto-mount lets users
+# carry their own tmux.conf into the container without remembering a flag.
+DEFAULT_TMUX_PREFIX = "C-a"
+DEFAULT_TMUX_CONFIG_PATH = Path("~/.config/tmux")
+
+
 @dataclass
 class Mount:
     host: Path
@@ -208,11 +216,25 @@ def resolve(
             "--tmux-config and --tmux-prefix require --tmux"
         )
 
-    if overrides.tmux_config is not None:
-        tc = _resolve_tmux_config_path(overrides.tmux_config)
-        mounts.append(
-            Mount(host=tc, container="/home/agent/.config/tmux", read_only=True)
-        )
+    resolved_tmux_prefix: str | None = None
+    if overrides.tmux:
+        resolved_tmux_prefix = overrides.tmux_prefix or DEFAULT_TMUX_PREFIX
+
+        if overrides.tmux_config is not None:
+            tc = _resolve_tmux_config_path(overrides.tmux_config)
+            mounts.append(
+                Mount(host=tc, container="/home/agent/.config/tmux", read_only=True)
+            )
+        else:
+            default_tc = _try_default_tmux_config(host_env)
+            if default_tc is not None:
+                mounts.append(
+                    Mount(
+                        host=default_tc,
+                        container="/home/agent/.config/tmux",
+                        read_only=True,
+                    )
+                )
 
     ssh_key_host_path: Path | None = None
     ssh_auth_sock_host_path: str | None = None
@@ -286,7 +308,7 @@ def resolve(
         ssh_key_host_path=ssh_key_host_path,
         ssh_auth_sock_host_path=ssh_auth_sock_host_path,
         tmux=overrides.tmux,
-        tmux_prefix=overrides.tmux_prefix,
+        tmux_prefix=resolved_tmux_prefix,
     )
 
 
@@ -409,6 +431,28 @@ def _resolve_tmux_config_path(raw: Path) -> Path:
         raise ConfigError(
             f"--tmux-config: {resolved} does not contain a tmux.conf"
         )
+    return resolved
+
+
+def _try_default_tmux_config(host_env: dict[str, str] | None) -> Path | None:
+    """Return the host's ~/.config/tmux iff it exists and has a tmux.conf.
+
+    Used as the silent fallback when --tmux is set without --tmux-config.
+    Anything missing or malformed returns None — the caller treats that as
+    "no auto-mount" rather than an error.
+    """
+    home = (host_env if host_env is not None else os.environ).get("HOME")
+    if not home:
+        return None
+    candidate = Path(home) / ".config" / "tmux"
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError:
+        return None
+    if not resolved.is_dir():
+        return None
+    if not (resolved / "tmux.conf").is_file():
+        return None
     return resolved
 
 

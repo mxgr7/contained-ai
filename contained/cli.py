@@ -96,13 +96,14 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--tmux-config", type=Path, metavar="PATH",
         help="bind-mount this host directory at ~/.config/tmux read-only "
-        "(requires --tmux)",
+        "(requires --tmux). defaults to the host's ~/.config/tmux when it "
+        "exists and contains a tmux.conf",
     )
     run_p.add_argument(
         "--tmux-prefix", metavar="KEYS",
         help="override the tmux prefix key (e.g. 'C-b'); useful when the "
         "mounted config sets a prefix that conflicts with your outer tmux "
-        "(requires --tmux)",
+        "(requires --tmux). defaults to C-a",
     )
     run_p.add_argument(
         "--dry-run", action="store_true",
