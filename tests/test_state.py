@@ -441,7 +441,7 @@ def test_read_source_rejects_symlink_file(tmp_path: Path):
     assert state._read_source(str(real)) == b"secret"
 
 
-def test_runtime_seeds_credentials_before_launch(tmp_path: Path, monkeypatch):
+def test_runtime_seeds_credentials_before_launch(tmp_path: Path, monkeypatch, mock_proxy):
     from contained import runtime
     _force_keychain_miss(monkeypatch)
     _redirect_state(monkeypatch, tmp_path / "xdg")
