@@ -246,6 +246,75 @@ def test_global_env_file_rejects_malformed_line(tmp_path: Path, monkeypatch):
         resolve("claude", loaded, CliOverrides(), cwd=tmp_path)
 
 
+def test_tmux_config_requires_tmux(tmp_path: Path):
+    cfg = tmp_path / "tmux"
+    cfg.mkdir()
+    (cfg / "tmux.conf").write_text("set -g prefix C-b\n")
+    loaded = load(None, cwd=tmp_path)
+    with pytest.raises(ConfigError, match="--tmux-config and --tmux-prefix"):
+        resolve("claude", loaded, CliOverrides(tmux_config=cfg), cwd=tmp_path)
+
+
+def test_tmux_prefix_requires_tmux(tmp_path: Path):
+    loaded = load(None, cwd=tmp_path)
+    with pytest.raises(ConfigError, match="--tmux-config and --tmux-prefix"):
+        resolve("claude", loaded, CliOverrides(tmux_prefix="C-b"), cwd=tmp_path)
+
+
+def test_tmux_config_adds_ro_mount(tmp_path: Path):
+    cfg = tmp_path / "tmux"
+    cfg.mkdir()
+    (cfg / "tmux.conf").write_text("set -g prefix C-b\n")
+    loaded = load(None, cwd=tmp_path)
+    r = resolve(
+        "claude", loaded,
+        CliOverrides(tmux=True, tmux_config=cfg),
+        cwd=tmp_path,
+    )
+    m = next(m for m in r.mounts if m.container == "/home/agent/.config/tmux")
+    assert m.host == cfg.resolve()
+    assert m.read_only is True
+
+
+def test_tmux_config_missing_dir_errors(tmp_path: Path):
+    loaded = load(None, cwd=tmp_path)
+    with pytest.raises(ConfigError, match="no such directory"):
+        resolve(
+            "claude", loaded,
+            CliOverrides(tmux=True, tmux_config=tmp_path / "nope"),
+            cwd=tmp_path,
+        )
+
+
+def test_tmux_config_missing_tmux_conf_errors(tmp_path: Path):
+    cfg = tmp_path / "tmux"
+    cfg.mkdir()
+    loaded = load(None, cwd=tmp_path)
+    with pytest.raises(ConfigError, match="does not contain a tmux.conf"):
+        resolve(
+            "claude", loaded,
+            CliOverrides(tmux=True, tmux_config=cfg),
+            cwd=tmp_path,
+        )
+
+
+def test_tmux_prefix_dry_run_shows_wrapper(tmp_path: Path):
+    cfg = tmp_path / "tmux"
+    cfg.mkdir()
+    (cfg / "tmux.conf").write_text("set -g prefix C-a\n")
+    loaded = load(None, cwd=tmp_path)
+    r = resolve(
+        "claude", loaded,
+        CliOverrides(tmux=True, tmux_config=cfg, tmux_prefix="C-b"),
+        cwd=tmp_path,
+    )
+    out = render_dry_run(r, host_env={})
+    assert "tmux_wrapper" in out
+    assert "source-file /home/agent/.config/tmux/tmux.conf" in out
+    assert "set -g prefix C-b" in out
+    assert "bind C-b send-prefix" in out
+
+
 def test_user_mount_under_workspace_does_not_suppress_default(tmp_path: Path):
     sub = tmp_path / "fixtures"
     sub.mkdir()

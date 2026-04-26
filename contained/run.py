@@ -65,6 +65,8 @@ class ResolvedRun:
     ssh_allowlist: list[str] = field(default_factory=list)
     ssh_key_host_path: Path | None = None
     ssh_auth_sock_host_path: str | None = None
+    tmux: bool = False
+    tmux_prefix: str | None = None
 
 
 @dataclass
@@ -85,6 +87,9 @@ class CliOverrides:
     # PRD 09 — Git over SSH
     allow_ssh: list[str] = field(default_factory=list)
     ssh_key: Path | None = None
+    tmux: bool = False
+    tmux_config: Path | None = None
+    tmux_prefix: str | None = None
 
 
 def resolve(
@@ -197,6 +202,18 @@ def resolve(
         _validate_mount_safety(m, allow_home=overrides.allow_home_mount)
         _require_host_path_exists(m)
 
+    if (overrides.tmux_config is not None or overrides.tmux_prefix is not None) \
+            and not overrides.tmux:
+        raise ConfigError(
+            "--tmux-config and --tmux-prefix require --tmux"
+        )
+
+    if overrides.tmux_config is not None:
+        tc = _resolve_tmux_config_path(overrides.tmux_config)
+        mounts.append(
+            Mount(host=tc, container="/home/agent/.config/tmux", read_only=True)
+        )
+
     ssh_key_host_path: Path | None = None
     ssh_auth_sock_host_path: str | None = None
     if ssh_allow:
@@ -268,6 +285,8 @@ def resolve(
         ssh_allowlist=ssh_allow,
         ssh_key_host_path=ssh_key_host_path,
         ssh_auth_sock_host_path=ssh_auth_sock_host_path,
+        tmux=overrides.tmux,
+        tmux_prefix=overrides.tmux_prefix,
     )
 
 
@@ -374,6 +393,23 @@ def _reject_dotssh_mounts(user_mounts: list[Mount]) -> None:
                 "then run with SSH_AUTH_SOCK set) or pass --ssh-key <path> "
                 "to forward a single key read-only."
             )
+
+
+def _resolve_tmux_config_path(raw: Path) -> Path:
+    p = Path(os.path.expanduser(os.path.expandvars(str(raw))))
+    try:
+        resolved = p.resolve(strict=True)
+    except FileNotFoundError as e:
+        raise ConfigError(f"--tmux-config: no such directory: {p}") from e
+    except OSError as e:
+        raise ConfigError(f"--tmux-config: {p}: {e}") from e
+    if not resolved.is_dir():
+        raise ConfigError(f"--tmux-config: not a directory: {resolved}")
+    if not (resolved / "tmux.conf").is_file():
+        raise ConfigError(
+            f"--tmux-config: {resolved} does not contain a tmux.conf"
+        )
+    return resolved
 
 
 def _resolve_ssh_key_path(raw: Path) -> Path:
@@ -656,6 +692,16 @@ def render_dry_run(run: ResolvedRun, host_env: dict[str, str]) -> str:
             lines.append(f"  - {p.seed.container_path} — {status}")
         lines.append("")
     from . import runtime  # local import to avoid cycle
+    if run.tmux and run.tmux_prefix:
+        has_user_config = any(
+            m.container == "/home/agent/.config/tmux" for m in run.mounts
+        )
+        lines.append("tmux_wrapper (generated):")
+        for w_line in runtime._build_tmux_wrapper_text(
+            run.tmux_prefix, source_user_config=has_user_config
+        ).splitlines():
+            lines.append(f"  {w_line}")
+        lines.append("")
     lines.append("docker invocation (preview):")
     lines.append("  " + " ".join(runtime.build_argv(run, mask_secrets=True)))
     if run.warnings:

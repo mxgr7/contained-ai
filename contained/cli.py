@@ -90,6 +90,21 @@ def build_parser() -> argparse.ArgumentParser:
         "ssh-agent forwarding)",
     )
     run_p.add_argument(
+        "--tmux", action="store_true",
+        help="run the agent inside a tmux session in the container",
+    )
+    run_p.add_argument(
+        "--tmux-config", type=Path, metavar="PATH",
+        help="bind-mount this host directory at ~/.config/tmux read-only "
+        "(requires --tmux)",
+    )
+    run_p.add_argument(
+        "--tmux-prefix", metavar="KEYS",
+        help="override the tmux prefix key (e.g. 'C-b'); useful when the "
+        "mounted config sets a prefix that conflicts with your outer tmux "
+        "(requires --tmux)",
+    )
+    run_p.add_argument(
         "--dry-run", action="store_true",
         help="print resolved config without running anything",
     )
@@ -201,6 +216,9 @@ def _cmd_run(args: argparse.Namespace, passthrough: list[str]) -> int:
             allow_home_mount=args.allow_home_mount,
             allow_ssh=args.allow_ssh,
             ssh_key=args.ssh_key,
+            tmux=args.tmux,
+            tmux_config=args.tmux_config,
+            tmux_prefix=args.tmux_prefix,
         )
         resolved = resolve(args.agent, loaded, overrides, cwd=cwd, host_env=dict(os.environ))
     except ConfigError as e:

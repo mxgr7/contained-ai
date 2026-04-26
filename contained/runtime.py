@@ -116,6 +116,9 @@ def ensure_daemon() -> None:
         )
 
 
+TMUX_WRAPPER_CONTAINER_PATH = "/home/agent/.config/contained/tmux-wrapper.conf"
+
+
 def build_argv(
     run: ResolvedRun,
     *,
@@ -123,6 +126,7 @@ def build_argv(
     proxy_network: str | None = None,
     ssh_config_host_path: Path | None = None,
     ssh_known_hosts_host_path: Path | None = None,
+    tmux_wrapper_host_path: Path | None = None,
 ) -> list[str]:
     argv = [
         "docker", "run", "--rm", "-it", "--init",
@@ -185,10 +189,30 @@ def build_argv(
         for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             argv += ["--env", f"{key}={proxy_url}"]
         argv += ["--env", "NO_PROXY=localhost,127.0.0.1"]
+    if run.tmux and tmux_wrapper_host_path is not None:
+        argv += [
+            "--mount",
+            f"type=bind,src={tmux_wrapper_host_path},"
+            f"dst={TMUX_WRAPPER_CONTAINER_PATH},ro",
+        ]
     argv.append(run.image)
+    cmd: list[str] = []
     if run.agent.entrypoint:
-        argv += run.agent.entrypoint
-    argv += run.passthrough_args
+        cmd += run.agent.entrypoint
+    cmd += run.passthrough_args
+    if run.tmux:
+        # `-A` attaches if a session named `contained` already exists,
+        # which lets the user `docker exec` into the container and
+        # rejoin a detached agent. `-s` names the session so the
+        # attach target is predictable. The trailing args are the
+        # command tmux runs as the session's first window.
+        tmux_argv = ["tmux"]
+        if tmux_wrapper_host_path is not None:
+            tmux_argv += ["-f", TMUX_WRAPPER_CONTAINER_PATH]
+        tmux_argv += ["new-session", "-A", "-s", "contained"]
+        argv += tmux_argv + cmd
+    else:
+        argv += cmd
     return argv
 
 
@@ -380,8 +404,14 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
     ssh_session: proxy.SshProxySession | None = None
     ssh_config_path: Path | None = None
     ssh_known_hosts_path: Path | None = None
+    tmux_wrapper_path: Path | None = None
     state_dir: Path | None = None
-    if (resolved.network == "allowlist" or resolved.ssh_allowlist) and not resolved.no_state:
+    needs_state_dir = (
+        resolved.network == "allowlist"
+        or bool(resolved.ssh_allowlist)
+        or resolved.tmux_prefix is not None
+    )
+    if needs_state_dir and not resolved.no_state:
         state_dir = state.project_state_dir(cwd)
         state_dir.mkdir(parents=True, exist_ok=True)
         with contextlib.suppress(OSError):
@@ -436,11 +466,15 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
                     "run `contained build` to build the proxy image."
                 ) from e
 
+        if resolved.tmux and resolved.tmux_prefix is not None:
+            tmux_wrapper_path = _prepare_tmux_wrapper(resolved, state_dir)
+
         argv = build_argv(
             resolved,
             proxy_network=session.network if session else None,
             ssh_config_host_path=ssh_config_path,
             ssh_known_hosts_host_path=ssh_known_hosts_path,
+            tmux_wrapper_host_path=tmux_wrapper_path,
         )
         return _execute(argv)
     finally:
@@ -450,10 +484,44 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
             proxy.stop_ssh(ssh_session)
         if session is not None:
             proxy.stop(session)
-        for artifact in (ssh_config_path, ssh_known_hosts_path):
+        for artifact in (ssh_config_path, ssh_known_hosts_path, tmux_wrapper_path):
             if artifact is not None:
                 with contextlib.suppress(OSError):
                     artifact.unlink(missing_ok=True)
+
+
+def _build_tmux_wrapper_text(prefix: str, *, source_user_config: bool) -> str:
+    """Render the tmux wrapper conf that overrides the prefix.
+
+    `source-file` is emitted before the override so the user's bindings
+    (including their original prefix) load first, then `set -g prefix`
+    rewrites it. `bind <prefix> send-prefix` makes the new prefix
+    nest-friendly: hitting it twice sends one through to an inner tmux.
+    """
+    lines: list[str] = []
+    if source_user_config:
+        lines.append("source-file /home/agent/.config/tmux/tmux.conf")
+    lines.append(f"set -g prefix {prefix}")
+    lines.append(f"bind {prefix} send-prefix")
+    return "\n".join(lines) + "\n"
+
+
+def _prepare_tmux_wrapper(resolved: ResolvedRun, state_dir: Path | None) -> Path:
+    """Write the tmux wrapper conf and return its host path."""
+    if state_dir is None:
+        import tempfile
+        state_dir = Path(tempfile.mkdtemp(prefix="contained-tmux-"))
+    has_user_config = any(
+        m.container == "/home/agent/.config/tmux" for m in resolved.mounts
+    )
+    text = _build_tmux_wrapper_text(
+        resolved.tmux_prefix or "", source_user_config=has_user_config
+    )
+    wrapper = state_dir / "tmux-wrapper.conf"
+    wrapper.write_text(text)
+    with contextlib.suppress(OSError):
+        wrapper.chmod(0o644)
+    return wrapper
 
 
 def _prepare_ssh_assets(

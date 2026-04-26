@@ -76,6 +76,66 @@ def test_build_argv_entrypoint_and_passthrough(tmp_path: Path):
     assert tail[-2:] == ["--foo", "bar"]
 
 
+def test_build_argv_tmux_wraps_entrypoint(tmp_path: Path):
+    r = _resolved(tmp_path, tmux=True, passthrough=["--help"])
+    argv = runtime.build_argv(r)
+    image_idx = argv.index(r.image)
+    tail = argv[image_idx + 1 :]
+    assert tail[:5] == ["tmux", "new-session", "-A", "-s", "contained"]
+    # Original entrypoint + passthrough come after the tmux wrapper.
+    assert tail[5] == "claude"
+    assert tail[-1] == "--help"
+
+
+def test_build_argv_no_tmux_by_default(tmp_path: Path):
+    r = _resolved(tmp_path)
+    argv = runtime.build_argv(r)
+    assert "tmux" not in argv
+
+
+def test_build_argv_tmux_with_wrapper_uses_dash_f(tmp_path: Path):
+    r = _resolved(tmp_path, tmux=True, tmux_prefix="C-b")
+    wrapper = tmp_path / "wrapper.conf"
+    wrapper.write_text("set -g prefix C-b\n")
+    argv = runtime.build_argv(r, tmux_wrapper_host_path=wrapper)
+    image_idx = argv.index(r.image)
+    tail = argv[image_idx + 1 :]
+    assert tail[:3] == ["tmux", "-f", runtime.TMUX_WRAPPER_CONTAINER_PATH]
+    assert tail[3:7] == ["new-session", "-A", "-s", "contained"]
+    # And the file is bind-mounted in.
+    joined = " ".join(argv[:image_idx])
+    assert f"src={wrapper}" in joined
+    assert f"dst={runtime.TMUX_WRAPPER_CONTAINER_PATH}" in joined
+
+
+def test_prepare_tmux_wrapper_writes_override(tmp_path: Path):
+    cfg_dir = tmp_path / "tmux"
+    cfg_dir.mkdir()
+    (cfg_dir / "tmux.conf").write_text("set -g prefix C-a\n")
+    from contained.run import Mount
+    r = _resolved(tmp_path, tmux=True, tmux_prefix="C-b")
+    # Simulate the resolve()-added user config mount.
+    r.mounts.append(Mount(host=cfg_dir, container="/home/agent/.config/tmux", read_only=True))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    wrapper = runtime._prepare_tmux_wrapper(r, state_dir)
+    assert wrapper == state_dir / "tmux-wrapper.conf"
+    text = wrapper.read_text()
+    assert "source-file /home/agent/.config/tmux/tmux.conf" in text
+    assert "set -g prefix C-b" in text
+    assert "bind C-b send-prefix" in text
+
+
+def test_prepare_tmux_wrapper_skips_source_when_no_user_config(tmp_path: Path):
+    r = _resolved(tmp_path, tmux=True, tmux_prefix="C-b")
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    wrapper = runtime._prepare_tmux_wrapper(r, state_dir)
+    text = wrapper.read_text()
+    assert "source-file" not in text
+    assert "set -g prefix C-b" in text
+
+
 def test_build_argv_env_masking(tmp_path: Path):
     r = _resolved(tmp_path, env=["MY_SECRET_KEY=hunter2"])
     masked = " ".join(runtime.build_argv(r, mask_secrets=True))

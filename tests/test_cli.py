@@ -214,6 +214,17 @@ def test_run_claude_without_api_key_uses_oauth(tmp_path: Path, capsys, monkeypat
     assert "resolved config" in capsys.readouterr().out
 
 
+def test_tmux_flag_dry_run(tmp_path: Path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    rc = cli.main(["run", "claude", "--tmux", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Tmux wrapper is visible in the docker invocation preview.
+    assert "tmux new-session" in out
+    assert "-s contained" in out
+
+
 def test_no_state_flag_reaches_runtime(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
