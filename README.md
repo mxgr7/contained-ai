@@ -221,8 +221,11 @@ surface: `github.com`, `codeload.github.com`, `registry.npmjs.org`,
 `pypi.org`, `files.pythonhosted.org`, `proxy.golang.org`, `crates.io`,
 and a few others. Each agent profile adds its own:
 
-- `claude` → `api.anthropic.com:443`
-- `pi` → `api.openai.com:443`, `api.anthropic.com:443`
+- `claude` → `api.anthropic.com:443`, `platform.claude.com:443`,
+  `api.openai.com:443`, `openrouter.ai:443`
+- `pi` → `chatgpt.com:443`, `auth.openai.com:443` (OpenAI Codex
+  subscription only — every other provider is intentionally
+  unreachable)
 
 Add more per-run or per-project:
 
@@ -289,9 +292,13 @@ parallel sessions. Your canonical host credentials are never exposed
 to the container.
 
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `CLAUDE_MODEL` are
-forwarded from the host shell in every profile. For persistent,
-user-wide defaults — so you don't have to re-export keys in every
-shell — drop a dotenv file at
+forwarded from the host shell to `claude`. **Pi forwards no provider
+API keys at all** — it's restricted to its OpenAI Codex subscription
+(auth via `pi /login`), so leaving Anthropic / OpenAI / OpenRouter
+keys out of pi's env is what disables those providers (pi
+auto-selects a provider whenever the matching `*_API_KEY` is set).
+For persistent, user-wide defaults — so you don't have to re-export
+keys in every shell — drop a dotenv file at
 `~/.local/share/contained/global/env`:
 
 ```sh
@@ -399,21 +406,25 @@ Diagnostics that run even when Docker isn't installed. Checks:
 
 ## Agent profiles
 
-Both profiles run in the same container image and see the same
-environment — only the entrypoint differs between `contained run
-claude` and `contained run pi`. Both CLIs are installed in either
-case, both `~/.claude` and `~/.pi` state dirs are bound, and both
-OAuth tokens are shared tool-wide (see credential forwarding above).
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `CLAUDE_MODEL` are forwarded
-in both profiles so either agent can reach either provider.
+Both profiles run in the same container image — both CLIs are
+installed in either case, both `~/.claude` and `~/.pi` state dirs are
+bound, and both OAuth tokens are shared tool-wide (see credential
+forwarding above). The entrypoint, forwarded env, and egress
+allowlist differ per profile so each agent only reaches the providers
+it's meant to.
 
-- **`claude`** — Claude Code (`@anthropic-ai/claude-code`). Runs with
+- **`claude`** — Claude Code (`@anthropic-ai/claude-code`). Forwards
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CLAUDE_MODEL`. Runs with
   `--permission-mode bypassPermissions` by default (the sandbox
   already enforces the real boundary).
 - **`pi`** — pi coding-agent (`@mariozechner/pi-coding-agent`).
-  First-run auth via `pi /login` inside the container or an exported
-  API key env var; non-credential state (settings, session history)
-  persists per project.
+  Locked to the OpenAI Codex (ChatGPT Plus/Pro) subscription: no
+  provider API keys are forwarded, and the egress allowlist only
+  permits `chatgpt.com:443` and `auth.openai.com:443`. First-run auth
+  is `pi /login` (writes `~/.pi/agent/auth.json`); non-credential
+  state (settings, session history) persists per project. Every other
+  provider pi knows about — Anthropic, OpenRouter, the OpenAI
+  API-key path, etc. — is silently unavailable by design.
 
 Adding a third profile is a single file edit: define an
 `AgentProfile` constant in `contained/profiles.py` and add it to the

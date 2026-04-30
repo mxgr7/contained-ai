@@ -98,26 +98,51 @@ PI_CREDENTIALS_SEED = FileSeed(
 )
 
 
-# Shared container environment for every agent profile. Claude and pi
-# are both installed in the same base image (see Dockerfile.base), and
-# from the sandbox's point of view they are interchangeable processes
-# — a user may invoke one from inside the other. So env forwarding,
-# egress allowlist, and seed files are identical across profiles, and
-# only the entrypoint (and any agent-specific args) differ. The
-# runtime also cross-mounts every profile's state_mount, so either
-# agent finds both ``~/.claude`` and ``~/.pi`` state when it starts.
-_SHARED_ENV: list[str] = [
+# Per-profile env and allowlist. Both CLIs ship in the same base image
+# (see Dockerfile.base) and the runtime cross-mounts every profile's
+# state_mount, so either agent finds both ``~/.claude`` and ``~/.pi``
+# state when it starts — but env forwarding and egress allowlist are
+# scoped per agent so each one only reaches the providers it's meant to.
+_AGENT_BROWSER_ENV = (
+    "AGENT_BROWSER_PROFILE=/home/agent/.local/share/contained/agent-browser"
+)
+
+# Claude Code is Anthropic-only at the wire level, but the upstream CLI
+# can also dispatch to OpenAI / OpenRouter when the user invokes those
+# models from inside a session — so forward both keys and allowlist
+# both surfaces.
+_CLAUDE_ENV: list[str] = [
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
     "CLAUDE_MODEL",
-    "AGENT_BROWSER_PROFILE=/home/agent/.local/share/contained/agent-browser",
+    _AGENT_BROWSER_ENV,
 ]
 
-_SHARED_ALLOWLIST: list[str] = [
+_CLAUDE_ALLOWLIST: list[str] = [
     "api.anthropic.com:443",
     "platform.claude.com:443",
     "api.openai.com:443",
     "openrouter.ai:443",
+]
+
+# pi is intentionally locked to the OpenAI Codex (ChatGPT Plus/Pro)
+# subscription. Auth comes from ``pi /login`` (OAuth via
+# ``auth.openai.com``, persisted to ~/.pi/agent/auth.json) and model
+# traffic goes to ``chatgpt.com/backend-api`` — the same backend the
+# official ``codex`` CLI uses. Forwarding NO provider API keys is what
+# disables every other path: pi auto-selects a provider from env vars
+# (see pi-mono ``packages/ai/src/env-api-keys.ts`` —
+# ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, …), so an
+# absent env var means that provider is silently unavailable. The
+# allowlist is the second barrier: even if a key leaked in some other
+# way, the proxy refuses anything that isn't a Codex endpoint.
+_PI_ENV: list[str] = [
+    _AGENT_BROWSER_ENV,
+]
+
+_PI_ALLOWLIST: list[str] = [
+    "chatgpt.com:443",
+    "auth.openai.com:443",
 ]
 
 _SHARED_FILE_SEEDS: list[FileSeed] = [
@@ -141,14 +166,14 @@ CLAUDE = AgentProfile(
     name="claude",
     image=BASE_IMAGE,
     entrypoint=["claude"],
-    env=list(_SHARED_ENV),
+    env=list(_CLAUDE_ENV),
     # The container is already sandboxed (no host fs access, egress
     # allowlist, non-root, cap-drop all), so Claude's per-call permission
     # gating adds friction without meaningful protection. Default to
     # bypassPermissions; override in contained.yaml if a project wants
     # the interactive prompts back.
     args=["--permission-mode", "bypassPermissions"],
-    allowlist=list(_SHARED_ALLOWLIST),
+    allowlist=list(_CLAUDE_ALLOWLIST),
     state_mount="/home/agent/.claude",
     file_seeds=list(_SHARED_FILE_SEEDS),
 )
@@ -157,8 +182,8 @@ PI = AgentProfile(
     name="pi",
     image=BASE_IMAGE,
     entrypoint=["pi"],
-    env=list(_SHARED_ENV),
-    allowlist=list(_SHARED_ALLOWLIST),
+    env=list(_PI_ENV),
+    allowlist=list(_PI_ALLOWLIST),
     state_mount="/home/agent/.pi",
     file_seeds=list(_SHARED_FILE_SEEDS),
 )

@@ -172,6 +172,31 @@ def test_default_workspace_mount_refuses_home(tmp_path: Path, monkeypatch):
         resolve("claude", loaded, CliOverrides(), cwd=fake_home)
 
 
+def test_pi_locked_to_openai_codex_subscription(tmp_path: Path, monkeypatch):
+    """pi must only reach the OpenAI Codex subscription endpoints, and
+    must not receive any provider API key env vars from the profile —
+    every other provider would be auto-selected if its env var were
+    forwarded (see pi-mono ai/src/env-api-keys.ts)."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
+    loaded = load(None, cwd=tmp_path)
+    r = resolve("pi", loaded, CliOverrides(), cwd=tmp_path)
+
+    profile_keys = {
+        e.key for e in r.env if e.source.startswith("agent profile")
+    }
+    assert "ANTHROPIC_API_KEY" not in profile_keys
+    assert "OPENAI_API_KEY" not in profile_keys
+    assert "OPENROUTER_API_KEY" not in profile_keys
+    assert "CLAUDE_MODEL" not in profile_keys
+
+    assert "chatgpt.com:443" in r.allowlist
+    assert "auth.openai.com:443" in r.allowlist
+    assert "api.anthropic.com:443" not in r.allowlist
+    assert "platform.claude.com:443" not in r.allowlist
+    assert "api.openai.com:443" not in r.allowlist
+    assert "openrouter.ai:443" not in r.allowlist
+
+
 def test_agent_browser_profile_mounted_and_configured(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
     loaded = load(None, cwd=tmp_path)
