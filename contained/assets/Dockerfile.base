@@ -78,7 +78,9 @@ RUN mkdir -p /home/agent/.npm-global \
  && chown -R agent:agent /home/agent/.npm-global
 ENV NPM_CONFIG_PREFIX=/home/agent/.npm-global \
     BUN_INSTALL=/home/agent/.bun \
-    PATH=/home/agent/.local/bin:/home/agent/.npm-global/bin:/home/agent/.bun/bin:$PATH \
+    CARGO_HOME=/home/agent/.cargo \
+    RUSTUP_HOME=/home/agent/.rustup \
+    PATH=/home/agent/.local/bin:/home/agent/.npm-global/bin:/home/agent/.bun/bin:/home/agent/.cargo/bin:$PATH \
     DISABLE_AUTOUPDATER=1 \
     CLAUDE_CODE_NO_FLICKER=1 \
     AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
@@ -86,7 +88,7 @@ ENV NPM_CONFIG_PREFIX=/home/agent/.npm-global \
 # Login shells (e.g. tmux panes) re-source /etc/profile, which resets PATH and
 # drops the agent-local bin dirs the ENV above sets. Re-add them via profile.d.
 RUN printf '%s\n' \
-        'export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.bun/bin:$PATH"' \
+        'export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$PATH"' \
         > /etc/profile.d/contained-paths.sh \
  && chmod 0644 /etc/profile.d/contained-paths.sh
 
@@ -109,6 +111,10 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # bun — JavaScript runtime and package manager. Installs to ~/.bun/bin.
 RUN curl -fsSL https://bun.sh/install | bash
+
+# Rust — stable toolchain via rustup. Installs to ~/.cargo and ~/.rustup.
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+        | sh -s -- -y --profile minimal --default-toolchain stable
 
 # Default git identity so commits work without a host gitconfig mount.
 # Override at runtime by mounting ~/.gitconfig or passing GIT_AUTHOR_* env vars.
