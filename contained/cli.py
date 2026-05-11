@@ -90,20 +90,21 @@ def build_parser() -> argparse.ArgumentParser:
         "ssh-agent forwarding)",
     )
     run_p.add_argument(
-        "--tmux", action="store_true",
-        help="run the agent inside a tmux session in the container",
+        "--tmux", action=argparse.BooleanOptionalAction, default=True,
+        help="run the agent inside a tmux session in the container "
+        "(default: on; pass --no-tmux to disable)",
     )
     run_p.add_argument(
         "--tmux-config", type=Path, metavar="PATH",
         help="bind-mount this host directory at ~/.config/tmux read-only "
-        "(requires --tmux). defaults to the host's ~/.config/tmux when it "
-        "exists and contains a tmux.conf",
+        "(no effect with --no-tmux). defaults to the host's ~/.config/tmux "
+        "when it exists and contains a tmux.conf",
     )
     run_p.add_argument(
         "--tmux-prefix", metavar="KEYS",
         help="override the tmux prefix key (e.g. 'C-b'); useful when the "
         "mounted config sets a prefix that conflicts with your outer tmux "
-        "(requires --tmux). defaults to C-a",
+        "(no effect with --no-tmux). defaults to C-a",
     )
     run_p.add_argument(
         "--dry-run", action="store_true",

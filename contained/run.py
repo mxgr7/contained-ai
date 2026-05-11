@@ -214,7 +214,7 @@ def resolve(
     if (overrides.tmux_config is not None or overrides.tmux_prefix is not None) \
             and not overrides.tmux:
         raise ConfigError(
-            "--tmux-config and --tmux-prefix require --tmux"
+            "--tmux-config and --tmux-prefix conflict with --no-tmux"
         )
 
     resolved_tmux_prefix: str | None = None

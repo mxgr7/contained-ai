@@ -96,8 +96,29 @@ USER agent
 WORKDIR /workspace
 
 # Claude Code — native installer (npm package is deprecated upstream).
-# Installs to ~/.local/bin/claude and ~/.local/share/claude.
-RUN curl -fsSL https://claude.ai/install.sh | bash
+# Installs to ~/.local/bin/claude and ~/.local/share/claude. Then shim the
+# launcher so any invocation — docker entrypoint, new tmux pane, sub-shell —
+# defaults to --permission-mode bypassPermissions when the caller didn't pass
+# one. The container is already sandboxed (no host fs, egress allowlist,
+# non-root, cap-drop ALL), so per-call permission gating adds friction without
+# meaningful protection. The shim replaces the installer's launcher in-place
+# so it wins regardless of PATH order (the installer prepends ~/.local/bin to
+# .bashrc, which would otherwise shadow any /usr/local/* shim).
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+ && mv /home/agent/.local/bin/claude /home/agent/.local/bin/claude-real \
+ && printf '%s\n' \
+        '#!/bin/bash' \
+        'real=/home/agent/.local/bin/claude-real' \
+        'for arg in "$@"; do' \
+        '    case "$arg" in' \
+        '        --permission-mode|--permission-mode=*)' \
+        '            exec "$real" "$@"' \
+        '            ;;' \
+        '    esac' \
+        'done' \
+        'exec "$real" --permission-mode bypassPermissions "$@"' \
+        > /home/agent/.local/bin/claude \
+ && chmod 0755 /home/agent/.local/bin/claude
 
 # pi coding-agent — Mario Zechner's terminal coding harness.
 # Upstream: https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent
