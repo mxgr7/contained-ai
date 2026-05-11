@@ -66,6 +66,16 @@ RUN apt-get update \
         fonts-noto-color-emoji fonts-noto-cjk fonts-freefont-ttf \
  && rm -rf /var/lib/apt/lists/*
 
+# hcloud — Hetzner Cloud CLI. Distributed as a static binary via GitHub
+# releases; resolves the latest tag at build time. Pass --no-cache to pick up
+# a newer release.
+RUN HCLOUD_VERSION="$(curl -fsSL https://api.github.com/repos/hetznercloud/cli/releases/latest | jq -r .tag_name)" \
+ && HCLOUD_ARCH="$(dpkg --print-architecture)" \
+ && curl -fsSL "https://github.com/hetznercloud/cli/releases/download/${HCLOUD_VERSION}/hcloud-linux-${HCLOUD_ARCH}.tar.gz" -o /tmp/hcloud.tar.gz \
+ && tar -xzf /tmp/hcloud.tar.gz -C /usr/local/bin hcloud \
+ && chmod 0755 /usr/local/bin/hcloud \
+ && rm -f /tmp/hcloud.tar.gz
+
 # Non-root user. uid/gid 1000 matches the `--user` the runtime passes.
 RUN groupadd --gid 1000 agent \
  && useradd  --uid 1000 --gid 1000 --create-home --shell /bin/bash agent \
