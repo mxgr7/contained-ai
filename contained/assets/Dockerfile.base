@@ -119,8 +119,7 @@ WORKDIR /workspace
 # directory is a per-project state bind-mount at runtime (see profiles.py),
 # so anything baked into the image under it would be shadowed. The shim
 # below points settings.json here.
-COPY statusline-command.sh /usr/local/share/contained/statusline-command.sh
-RUN chmod 0755 /usr/local/share/contained/statusline-command.sh
+COPY --chmod=0755 statusline-command.sh /usr/local/share/contained/statusline-command.sh
 
 # Claude Code — native installer (npm package is deprecated upstream).
 # Installs to ~/.local/bin/claude and ~/.local/share/claude. Then shim the
