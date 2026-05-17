@@ -76,6 +76,15 @@ RUN HCLOUD_VERSION="$(curl -fsSL https://api.github.com/repos/hetznercloud/cli/r
  && chmod 0755 /usr/local/bin/hcloud \
  && rm -f /tmp/hcloud.tar.gz
 
+# Go toolchain — official tarball into /usr/local/go. Resolves the latest
+# stable release at build time via go.dev/VERSION. Pass --no-cache to pick up
+# a newer release.
+RUN GO_VERSION="$(curl -fsSL https://go.dev/VERSION?m=text | head -n1)" \
+ && GO_ARCH="$(dpkg --print-architecture)" \
+ && curl -fsSL "https://go.dev/dl/${GO_VERSION}.linux-${GO_ARCH}.tar.gz" -o /tmp/go.tar.gz \
+ && tar -xzf /tmp/go.tar.gz -C /usr/local \
+ && rm -f /tmp/go.tar.gz
+
 # Non-root user. uid/gid 1000 matches the `--user` the runtime passes.
 RUN groupadd --gid 1000 agent \
  && useradd  --uid 1000 --gid 1000 --create-home --shell /bin/bash agent \
@@ -90,7 +99,8 @@ ENV NPM_CONFIG_PREFIX=/home/agent/.npm-global \
     BUN_INSTALL=/home/agent/.bun \
     CARGO_HOME=/home/agent/.cargo \
     RUSTUP_HOME=/home/agent/.rustup \
-    PATH=/home/agent/.local/bin:/home/agent/.npm-global/bin:/home/agent/.bun/bin:/home/agent/.cargo/bin:$PATH \
+    GOPATH=/home/agent/go \
+    PATH=/home/agent/.local/bin:/home/agent/.npm-global/bin:/home/agent/.bun/bin:/home/agent/.cargo/bin:/home/agent/go/bin:/usr/local/go/bin:$PATH \
     DISABLE_AUTOUPDATER=1 \
     CLAUDE_CODE_NO_FLICKER=1 \
     AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
@@ -98,7 +108,7 @@ ENV NPM_CONFIG_PREFIX=/home/agent/.npm-global \
 # Login shells (e.g. tmux panes) re-source /etc/profile, which resets PATH and
 # drops the agent-local bin dirs the ENV above sets. Re-add them via profile.d.
 RUN printf '%s\n' \
-        'export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$PATH"' \
+        'export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/go/bin:/usr/local/go/bin:$PATH"' \
         > /etc/profile.d/contained-paths.sh \
  && chmod 0644 /etc/profile.d/contained-paths.sh
 
