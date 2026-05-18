@@ -17,6 +17,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         ca-certificates curl git gnupg openssh-client netcat-openbsd unzip rsync \
+        dnsutils \
         build-essential pkg-config \
         python3 python3-pip python3-venv python3-dev pipx \
         ripgrep fd-find jq sqlite3 \
