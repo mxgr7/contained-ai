@@ -76,6 +76,7 @@ class ResolvedRun:
     ssh_auth_sock_host_path: str | None = None
     tmux: bool = False
     tmux_prefix: str | None = None
+    clipboard_bridge: bool = True
 
 
 @dataclass
@@ -99,6 +100,7 @@ class CliOverrides:
     tmux: bool = False
     tmux_config: Path | None = None
     tmux_prefix: str | None = None
+    clipboard_bridge: bool = True
 
 
 def resolve(
@@ -321,6 +323,7 @@ def resolve(
         ssh_auth_sock_host_path=ssh_auth_sock_host_path,
         tmux=overrides.tmux,
         tmux_prefix=resolved_tmux_prefix,
+        clipboard_bridge=overrides.clipboard_bridge,
     )
 
 
@@ -747,7 +750,19 @@ def render_dry_run(run: ResolvedRun, host_env: dict[str, str]) -> str:
                 status = "missing (agent will prompt)"
             lines.append(f"  - {p.seed.container_path} — {status}")
         lines.append("")
-    from . import runtime  # local import to avoid cycle
+    from . import clipboard as _clipboard, runtime  # local import to avoid cycle
+    lines.append(
+        "clipboard_bridge: "
+        + (
+            f"enabled (image -> {_clipboard.CONTAINER_IMAGE_PATH})"
+            if run.clipboard_bridge
+            else "disabled"
+        )
+    )
+    lines.append("")
+    clipboard_preview_dir = (
+        Path("<host-state-dir>/clipboard") if run.clipboard_bridge else None
+    )
     if run.tmux and run.tmux_prefix:
         has_user_config = any(
             m.container == "/home/agent/.config/tmux" for m in run.mounts
@@ -759,7 +774,16 @@ def render_dry_run(run: ResolvedRun, host_env: dict[str, str]) -> str:
             lines.append(f"  {w_line}")
         lines.append("")
     lines.append("docker invocation (preview):")
-    lines.append("  " + " ".join(runtime.build_argv(run, mask_secrets=True)))
+    lines.append(
+        "  "
+        + " ".join(
+            runtime.build_argv(
+                run,
+                mask_secrets=True,
+                clipboard_host_dir=clipboard_preview_dir,
+            )
+        )
+    )
     if run.warnings:
         lines.append("")
         lines.extend(run.warnings)

@@ -122,6 +122,19 @@ WORKDIR /workspace
 # below points settings.json here.
 COPY --chmod=0755 statusline-command.sh /usr/local/share/contained/statusline-command.sh
 
+# Clipboard bridge shim. ``pbpaste`` / ``xclip`` / ``wl-paste`` are all
+# implemented by the same Python script — it dispatches on argv[0] and
+# requests image vs. text bytes from the host-side bridge over the
+# bind-mounted Unix socket. Installed early so the launcher shims and
+# anything Claude Code shells out to find them on PATH ahead of any
+# distro packages that might land in later layers.
+USER root
+COPY --chmod=0755 clipboard-shim.py /usr/local/share/contained/clipboard-shim.py
+RUN ln -sf /usr/local/share/contained/clipboard-shim.py /usr/local/bin/pbpaste \
+ && ln -sf /usr/local/share/contained/clipboard-shim.py /usr/local/bin/xclip \
+ && ln -sf /usr/local/share/contained/clipboard-shim.py /usr/local/bin/wl-paste
+USER agent
+
 # Claude Code — native installer (npm package is deprecated upstream).
 # Installs to ~/.local/bin/claude and ~/.local/share/claude. Then shim the
 # launcher so any invocation — docker entrypoint, new tmux pane, sub-shell —

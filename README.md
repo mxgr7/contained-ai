@@ -382,6 +382,7 @@ contained version
 | `--rebuild` | Force rebuild of `Dockerfile.contained` overlay. |
 | `--no-state` | Skip state dir mount — clean run, no persistence. |
 | `--allow-home-mount` | Permit mounting `$HOME` (off by default). |
+| `--clipboard-bridge` / `--no-clipboard-bridge` | Run a host-side daemon so the agent's Ctrl-V pastes images from your clipboard (default: on). |
 | `--config PATH` | Use a specific `contained.yaml` instead of discovering. |
 | `--no-config` | Ignore any discovered `contained.yaml`. |
 

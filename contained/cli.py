@@ -95,6 +95,12 @@ def build_parser() -> argparse.ArgumentParser:
         "(default: on; pass --no-tmux to disable)",
     )
     run_p.add_argument(
+        "--clipboard-bridge", action=argparse.BooleanOptionalAction, default=True,
+        help="run a host-side clipboard bridge so the agent's Ctrl-V "
+        "pastes images from the host clipboard (default: on; pass "
+        "--no-clipboard-bridge to disable)",
+    )
+    run_p.add_argument(
         "--tmux-config", type=Path, metavar="PATH",
         help="bind-mount this host directory at ~/.config/tmux read-only "
         "(no effect with --no-tmux). defaults to the host's ~/.config/tmux "
@@ -221,6 +227,7 @@ def _cmd_run(args: argparse.Namespace, passthrough: list[str]) -> int:
             tmux=args.tmux,
             tmux_config=args.tmux_config,
             tmux_prefix=args.tmux_prefix,
+            clipboard_bridge=args.clipboard_bridge,
         )
         resolved = resolve(args.agent, loaded, overrides, cwd=cwd, host_env=dict(os.environ))
     except ConfigError as e:

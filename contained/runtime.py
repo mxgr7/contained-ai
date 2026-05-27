@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 
-from . import profiles, proxy, state
+from . import clipboard, profiles, proxy, state
 from .run import (
     SSH_AGENT_SOCK_CONTAINER_PATH,
     SSH_CONFIG_CONTAINER_PATH,
@@ -127,6 +127,7 @@ def build_argv(
     ssh_config_host_path: Path | None = None,
     ssh_known_hosts_host_path: Path | None = None,
     tmux_wrapper_host_path: Path | None = None,
+    clipboard_host_dir: Path | None = None,
 ) -> list[str]:
     argv = [
         "docker", "run", "--rm", "-it", "--init",
@@ -194,6 +195,23 @@ def build_argv(
             "--mount",
             f"type=bind,src={tmux_wrapper_host_path},"
             f"dst={TMUX_WRAPPER_CONTAINER_PATH},ro",
+        ]
+    if run.clipboard_bridge and clipboard_host_dir is not None:
+        # Mount the *directory* containing the bridge's image/meta
+        # files, not the individual files: the bridge rewrites
+        # ``image.png`` atomically via ``rename``, which changes the
+        # inode. A file-level bind mount binds by inode and the
+        # container would forever see the original (empty) file.
+        argv += [
+            "--mount",
+            f"type=bind,src={clipboard_host_dir},"
+            f"dst={clipboard.CONTAINER_DIR},ro",
+        ]
+        argv += [
+            "--env",
+            f"CONTAINED_CLIPBOARD_FILE={clipboard.CONTAINER_IMAGE_PATH}",
+            "--env",
+            f"CONTAINED_CLIPBOARD_META={clipboard.CONTAINER_META_PATH}",
         ]
     argv.append(run.image)
     cmd: list[str] = []
@@ -403,6 +421,7 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
 
     session: proxy.ProxySession | None = None
     ssh_session: proxy.SshProxySession | None = None
+    clipboard_session: clipboard.ClipboardBridge | None = None
     ssh_config_path: Path | None = None
     ssh_known_hosts_path: Path | None = None
     tmux_wrapper_path: Path | None = None
@@ -411,6 +430,7 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
         resolved.network == "allowlist"
         or bool(resolved.ssh_allowlist)
         or resolved.tmux_prefix is not None
+        or resolved.clipboard_bridge
     )
     if needs_state_dir and not resolved.no_state:
         state_dir = state.project_state_dir(cwd)
@@ -470,12 +490,19 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
         if resolved.tmux and resolved.tmux_prefix is not None:
             tmux_wrapper_path = _prepare_tmux_wrapper(resolved, state_dir)
 
+        if resolved.clipboard_bridge:
+            clipboard_session = _start_clipboard_bridge(resolved, state_dir)
+
+        clipboard_dir = (
+            clipboard_session.host_dir if clipboard_session is not None else None
+        )
         argv = build_argv(
             resolved,
             proxy_network=session.network if session else None,
             ssh_config_host_path=ssh_config_path,
             ssh_known_hosts_host_path=ssh_known_hosts_path,
             tmux_wrapper_host_path=tmux_wrapper_path,
+            clipboard_host_dir=clipboard_dir,
         )
         return _execute(argv)
     finally:
@@ -485,10 +512,50 @@ def run(resolved: ResolvedRun, cwd: Path) -> int:
             proxy.stop_ssh(ssh_session)
         if session is not None:
             proxy.stop(session)
+        if clipboard_session is not None:
+            clipboard.stop(clipboard_session)
         for artifact in (ssh_config_path, ssh_known_hosts_path, tmux_wrapper_path):
             if artifact is not None:
                 with contextlib.suppress(OSError):
                     artifact.unlink(missing_ok=True)
+
+
+def _start_clipboard_bridge(
+    resolved: ResolvedRun, state_dir: Path | None
+) -> clipboard.ClipboardBridge | None:
+    """Spawn the host clipboard bridge if the host can support it.
+
+    Returns None (with a stderr warning) when the host has no
+    discoverable clipboard tool — headless Linux, mostly. The container
+    shims fail silently in that case, which mirrors the behaviour of
+    running real clipboard tools on an empty / unavailable clipboard.
+    """
+    if not clipboard.host_supports_clipboard():
+        print(
+            "contained: no host clipboard tool found "
+            "(install pngpaste / xclip / wl-paste); Ctrl-V image paste "
+            "into the agent will be unavailable. pass "
+            "--no-clipboard-bridge to silence this.",
+            file=sys.stderr,
+        )
+        return None
+    try:
+        bridge = clipboard.start(
+            state_dir=state_dir if not resolved.no_state else None
+        )
+    except clipboard.ClipboardError as e:
+        print(
+            f"contained: clipboard bridge failed to start: {e}. "
+            "continuing without it.",
+            file=sys.stderr,
+        )
+        return None
+    print(
+        f"contained: clipboard bridge log -> {bridge.log_path} "
+        "(tail -f for Ctrl-V debugging)",
+        file=sys.stderr,
+    )
+    return bridge
 
 
 def _build_tmux_wrapper_text(prefix: str, *, source_user_config: bool) -> str:
