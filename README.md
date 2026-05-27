@@ -5,14 +5,18 @@ containers, without fighting Docker every time you start a session.
 
 `contained` is a thin Python wrapper around `docker run` that wires up
 the fiddly bits you'd want for a sandboxed agent: a locked-down base
-image, read-only workspace mounts, per-project state persistence, an
-egress allowlist enforced by a tinyproxy sidecar, and credential
-forwarding that doesn't expose your whole home directory. One command
-to launch, same ergonomics across agents.
+image, a per-project workspace mount, an egress allowlist enforced by
+a tinyproxy sidecar, and credential forwarding that doesn't expose
+your whole home directory. One command to launch, same ergonomics
+across agents.
 
-> **Status:** MVP code-complete. Every implementation PRD (01–05) is
-> under `docs/prd/done/`. Live end-to-end smoke testing against real
-> agents and hosts is the next step.
+```sh
+cd ~/code/my-project
+contained run claude
+```
+
+That's the whole interface. Everything else in this README is
+explaining the defaults or how to override them.
 
 ## Why
 
@@ -89,14 +93,19 @@ contained build
 
 This produces:
 
-- `ghcr.io/contained-ai/contained-base:edge` — debian slim with
-  Node 20, Python 3, git, `@anthropic-ai/claude-code`, and
-  `@mariozechner/pi-coding-agent` pre-installed.
+- `ghcr.io/contained-ai/contained-base:edge` — debian slim with the
+  toolchains a coding agent typically reaches for: Node 20, Python 3
+  (+ `uv`, `pipx`), Go, Rust, Bun, plus `git`, `gh`, `ripgrep`, `fd`,
+  `jq`, `sqlite3`, `tmux` (built from upstream), `chromium` (for
+  `agent-browser`), and both agent CLIs (`claude`,
+  `@mariozechner/pi-coding-agent`).
 - `ghcr.io/contained-ai/contained-proxy:edge` — tinyproxy configured
   for `FilterDefaultDeny` allowlist enforcement.
 
-`contained run` will pick these up automatically. (A published
-multi-arch image on GHCR is a post-MVP follow-up.)
+`contained run` picks these up automatically. To layer extra tooling
+on top, drop a `Dockerfile.contained` next to your `contained.yaml`
+(see [Per-project Dockerfile overlay](#per-project-dockerfile-overlay)
+below).
 
 ## Quick start
 
@@ -119,8 +128,9 @@ What happens:
 4. It creates a `--internal` Docker network, starts a tinyproxy
    sidecar on it with the resolved allowlist, and attaches the agent
    container to that network only.
-5. `claude` starts attached to your terminal, with `$PWD` mounted at
-   `/workspace`.
+5. `claude` starts attached to your terminal, wrapped in a tmux
+   session (default — disable with `--no-tmux`), with `$PWD` mounted
+   at `/workspace`.
 6. On exit, the proxy container and network are torn down; the state
    dir is left in place for next time.
 
@@ -253,23 +263,50 @@ reach the proxy. `HTTP_PROXY` / `HTTPS_PROXY` env vars point agents at
 anchored regex per allowlisted host, matching both plain HTTP requests
 and HTTPS `CONNECT` targets. No TLS termination.
 
-Known limitations of the MVP approach:
+Known limitations:
 
 - **Hostname-only** — no per-path rules. The decision point is "which
   host," not "which URL."
 - **Agents that ignore `HTTPS_PROXY`** won't reach the network at all.
   That's intentional but will break tools until they pick up the env
   vars.
-- **Git over SSH** — not supported. tinyproxy's CONNECT allowlist is
-  HTTPS-only (port 443); SSH egress is an opt-in post-MVP follow-up.
-  Use git over HTTPS.
 
-For escape hatches, use `--network host` for a single run.
+### Git over SSH
+
+Off by default. Opt in per-host with `--allow-ssh`, which spins up a
+second tinyproxy on port 22 with its own allowlist:
+
+```sh
+contained run claude --allow-ssh github.com --allow-ssh git.corp.example
+```
+
+You also need an SSH credential reachable inside the container —
+either an `ssh-agent` socket from the host (auto-forwarded when
+`SSH_AUTH_SOCK` is set) or `--ssh-key ~/.ssh/id_ed25519` for a
+read-only key mount. Allowed hosts only ever talk to port 22; HTTPS
+egress to the same host still needs a regular `--allow` entry.
+
+### Adding hosts to a running session
+
+If an agent hits a blocked host mid-session, you don't have to
+restart. From another shell:
+
+```sh
+contained allow staging.internal.example.com:443
+contained allow --list                   # show current allowlist
+```
+
+`contained allow` finds the running session, rewrites the proxy's
+filter file, and signals tinyproxy to reload. If you have multiple
+sessions running, pass `--run <id>`.
+
+For broader escape hatches, use `--network host` for a single run.
 
 ## State and credential forwarding
 
-Every agent writes its session history, command history, and whatever
-else it wants to the per-project state dir:
+**Per-project state.** Each agent writes its session history, command
+history, and settings to a state dir keyed on the absolute path of
+your project:
 
 ```
 ~/.local/share/contained/projects/<basename>-<hash>/
@@ -277,19 +314,22 @@ else it wants to the per-project state dir:
 └── pi/        ← mounted at /home/agent/.pi inside the container
 ```
 
-Two projects have different hashes → completely separate state. No
+Two projects get different hashes → completely separate state. No
 cross-contamination.
 
-Credential forwarding is a **scoped writable copy**. On first run,
-`contained` copies the minimum credential file from the host
-(Claude: `~/.claude/.credentials.json` or the macOS keychain entry)
-into a tool-wide global dir at
-`~/.local/share/contained/global/claude/.credentials.json` and
-bind-mounts it into every container. All `contained` runs share this
-single credential, so OAuth token refreshes done inside one container
-propagate to every other one — no relogin churn across projects or
-parallel sessions. Your canonical host credentials are never exposed
-to the container.
+**Tool-wide OAuth tokens.** On first run, `contained` copies the
+relevant credential file from the host (Claude:
+`~/.claude/.credentials.json` or the macOS keychain entry; pi:
+`~/.pi/agent/auth.json`) into:
+
+```
+~/.local/share/contained/global/<agent>/...
+```
+
+…and bind-mounts it into every container. All runs share the one
+copy, so token refreshes propagate across projects and parallel
+sessions — no relogin churn. Your canonical host credentials are
+never exposed to the container itself.
 
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and `CLAUDE_MODEL` are
 forwarded from the host shell to `claude`. **Pi forwards no provider
@@ -362,6 +402,7 @@ daemon or the kernel itself — those remain the host's attack surface.
 
 ```
 contained run <agent> [options] [-- passthrough args for the agent]
+contained allow <host[:port]>... [--run ID] [--list]
 contained build [--tag REF] [--rebuild]
 contained doctor
 contained version
@@ -377,17 +418,34 @@ contained version
 | `--env KEY[=VALUE]` | Forward an env var (value from host if omitted). Repeatable. Unset required vars fail fast. |
 | `--env-from FILE` | Load env vars from a dotenv-style file. |
 | `--network {allowlist,host,none}` | Network mode (default: `allowlist`). |
-| `--allow HOST:PORT` | Add one host to the allowlist for this run. Repeatable. |
+| `--allow HOST:PORT` | Add one host to the HTTPS allowlist for this run. Repeatable. |
+| `--allow-ssh HOST` | Allow Git over SSH to HOST (port 22 only). Requires `SSH_AUTH_SOCK` or `--ssh-key`. Repeatable. |
+| `--ssh-key PATH` | Forward a single SSH private key read-only (alternative to ssh-agent forwarding). |
 | `--image REF` | Override the base image. |
 | `--rebuild` | Force rebuild of `Dockerfile.contained` overlay. |
 | `--no-state` | Skip state dir mount — clean run, no persistence. |
 | `--allow-home-mount` | Permit mounting `$HOME` (off by default). |
+| `--tmux` / `--no-tmux` | Wrap the agent in a tmux session inside the container (default: on). Lets you split panes, detach, etc. without an outer multiplexer. |
+| `--tmux-config PATH` | Bind-mount this directory at `~/.config/tmux` read-only. Auto-detects `~/.config/tmux` on the host. |
+| `--tmux-prefix KEYS` | Override the tmux prefix key (default `C-a`). Useful if you're already inside tmux. |
 | `--clipboard-bridge` / `--no-clipboard-bridge` | Run a host-side daemon so the agent's Ctrl-V pastes images from your clipboard (default: on). |
 | `--config PATH` | Use a specific `contained.yaml` instead of discovering. |
 | `--no-config` | Ignore any discovered `contained.yaml`. |
 
 Everything after `--` is passed through verbatim to the agent's
 entrypoint.
+
+### `contained allow`
+
+Add hosts to a running session's allowlist without restarting it.
+Targets the single running session by default; pass `--run <id>` to
+disambiguate if you have multiple. `--list` prints the current
+allowlist instead.
+
+```sh
+contained allow staging.example.com:443
+contained allow --list
+```
 
 ### `contained build`
 
@@ -476,24 +534,23 @@ Current status: PRDs 01–05 done, PRD 00 is the overview. See
 
 ## Roadmap
 
-Code-complete MVP items:
+Shipped:
 
-- [x] CLI surface and config loader (PRD 01)
-- [x] Docker runtime, security posture, overlay builds (PRD 02)
-- [x] Mounts, env forwarding, per-project state (PRD 03)
-- [x] Networking + egress allowlist proxy (PRD 04)
-- [x] Agent profiles + credential forwarding (PRD 05)
+- CLI, config loader, Docker runtime, security posture, overlay builds
+- Mounts, env forwarding, per-project state
+- Egress allowlist proxy, live `contained allow` updates
+- Agent profiles + tool-wide shared credential forwarding
+- Git over SSH (`--allow-ssh`, `--ssh-key`)
+- tmux session wrapping, clipboard bridge, `agent-browser`
 
-Before the "it works" sticker:
+Open:
 
-- [ ] Live end-to-end smoke test: `contained build && contained run
-      claude`, clone a public GitHub repo, verify `curl example.com` is
-      blocked.
-- [ ] Multi-arch GHCR publish of `contained-base` and
-      `contained-proxy`.
+- Multi-arch GHCR publish of `contained-base` and `contained-proxy`
+  (today: build locally with `contained build`).
+- Third-party agent profiles, keychain integration, per-URL allowlist
+  rules, richer doctor checks.
 
-Post-MVP ideas: third-party profiles, keychain integration, per-URL
-rules, SSH-capable egress, richer doctor checks.
+See `docs/prd/` for the kanban (`todo/`, `in_progress/`, `done/`).
 
 ## License
 
